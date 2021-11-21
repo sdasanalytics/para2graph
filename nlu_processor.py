@@ -68,24 +68,25 @@ class TextProcessor:
         log.debug(text)
         nlp = spacy.load("en_core_web_trf")
         self.doc = nlp(text)
-        COLUMNS = [SUBJECT, PREDICATE, OBJECT, NER,
+        self.COLUMNS = [SUBJECT, PREDICATE, OBJECT, NER,
                     "token.text","token.dep_","token.pos_","token.head.text","token.lemma_",
                     "compound_noun","verb_phrase","NER.type",
                     "wd_instances_of","wikiDataClasses", "dbPediaTypes","ConceptNetTypes",
                     "ts"]
-        self.text_df = pd.DataFrame(columns=COLUMNS)
         self.db = sqlite3.connect(SQL_LOCAL_DB)
 
     def execute(self):
         for sentence in self.doc.sents:
-            self.process_sentence(sentence)
+            spacy_data, text_df = self.process_sentence(sentence)
+            self.create_graph(spacy_data, text_df)
         return
 
     def process_sentence(self, sentence):
+        text_df = pd.DataFrame(columns=self.COLUMNS)
         # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
         spacy_data = self.get_spacy_data(sentence)
         row = {SUBJECT: str(spacy_data[SUBJECT]), PREDICATE: str(spacy_data[PREDICATE]), OBJECT: str(spacy_data[OBJECT]), NER: str(spacy_data[NER]), "ts" : datetime.now()}
-        self.text_df = self.text_df.append(row, ignore_index=True)
+        text_df = text_df.append(row, ignore_index=True)
 
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
@@ -111,10 +112,33 @@ class TextProcessor:
                 row["verb_phrase"] = f"{token.head.text} {token.text}"
             
             row["ts"] = datetime.now()
-            self.text_df = self.text_df.append(row, ignore_index=True)
-        self.text_df.to_sql("paragraph",self.db,if_exists="append")
-        return
+            text_df = text_df.append(row, ignore_index=True)
+        
+        # Write the text_df to db
+        text_df.to_sql("paragraph",self.db,if_exists="append")
 
+        return spacy_data, text_df
+
+    def create_graph(self, spacy_data, text_df):
+        ...
+        '''
+        Driving loops are as follows; each one checks if it was processed in the earlier loop or not
+        NERs
+        Compound Nouns
+        Proper Nouns
+        Verb Phrases
+        Nouns
+        Pronouns or Dets?
+        '''
+        G = nx.Graph()
+        for key in spacy_data[NER]:
+            G.add_node(key, classification="Entity", type=spacy_data[NER][key] )
+        
+        for node in G.nodes(data=True):
+            print(node)
+        plot_graph(G)
+
+        
     # My own function invented to create the best chunks out of the sentences
     def get_spacy_data(self, doc):
         subject = []
@@ -150,9 +174,7 @@ class TextProcessor:
 
         ner_dict = {}
         for ent in doc.ents:
-            ent_list = ner_dict.get(ent.label_,[])
-            ent_list.append(ent.text)
-            ner_dict[ent.label_] = ent_list
+            ner_dict[ent.text] = ent.label_
 
         spacy_data = {
                 SUBJECT:subject,
