@@ -19,6 +19,7 @@ import conceptnet_lite as cn_l
 import pandas as pd
 import sqlite3
 from datetime import datetime
+import ast
 
 SUBJECT = "SUBJECT"
 PREDICATE = "PREDICATE"
@@ -68,10 +69,10 @@ class TextProcessor:
         log.debug(text)
         nlp = spacy.load("en_core_web_trf")
         self.doc = nlp(text)
-        self.COLUMNS = [SUBJECT, PREDICATE, OBJECT, NER,
-                    "token.text","token.dep_","token.pos_","token.head.text","token.lemma_",
-                    "compound_noun","verb_phrase","NER.type",
-                    "wd_instances_of","wikiDataClasses", "dbPediaTypes","ConceptNetTypes",
+        self.COLUMNS = ["TYPE", "NER.type",
+                    "item","token.dep_","token.pos_","token.head.text","token.lemma_",
+                    "compound_noun","verb_phrase",
+                    "wd_instances_of","wikiDataClasses", "dbPediaTypes","conceptNetTypes",
                     "ts"]
         self.db = sqlite3.connect(SQL_LOCAL_DB)
 
@@ -85,15 +86,27 @@ class TextProcessor:
         text_df = pd.DataFrame(columns=self.COLUMNS)
         # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
         spacy_data = self.get_spacy_data(sentence)
-        row = {SUBJECT: str(spacy_data[SUBJECT]), PREDICATE: str(spacy_data[PREDICATE]), OBJECT: str(spacy_data[OBJECT]), NER: str(spacy_data[NER]), "ts" : datetime.now()}
-        text_df = text_df.append(row, ignore_index=True)
+        # row = {SUBJECT: str(spacy_data[SUBJECT]), PREDICATE: str(spacy_data[PREDICATE]), OBJECT: str(spacy_data[OBJECT]), NER: str(spacy_data[NER]), "ts" : datetime.now()}
+        subject_row = {"TYPE":SUBJECT, "item": str(spacy_data[SUBJECT]), "ts" : datetime.now()}
+        text_df = text_df.append(subject_row, ignore_index=True)
+        predicate_row = {"TYPE":PREDICATE, "item": str(spacy_data[PREDICATE]), "ts" : datetime.now()}
+        text_df = text_df.append(predicate_row, ignore_index=True)
+        object_row = {"TYPE":OBJECT, "item": str(spacy_data[OBJECT]), "ts" : datetime.now()}
+        text_df = text_df.append(object_row, ignore_index=True)
+        for item in spacy_data[NER]:
+            ner_row = {"TYPE":NER, "item":item, "NER.type":spacy_data[NER][item], "ts" : datetime.now()}
+            wk_dict = self.wikifier(item)
+            ner_row["wikiDataClasses"] = str(wk_dict["wikiDataClasses"])
+            ner_row["dbPediaTypes"] = str(wk_dict["dbPediaTypes"])
+            ner_row["wd_instances_of"] = str(self.get_wikidata(item)['wd_instances_of'])
+            text_df = text_df.append(ner_row, ignore_index=True)
 
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in sentence:
             log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
             
-            row = {"token.text":token.text,"token.dep_":token.dep_,"token.pos_":token.pos_,"token.head.text":token.head.text,"token.lemma_":token.lemma_}
+            row = {"TYPE":"TOKEN","item":token.text,"token.dep_":token.dep_,"token.pos_":token.pos_,"token.head.text":token.head.text,"token.lemma_":token.lemma_}
             
             # Processing nouns
             if(token.pos_ in ['PROPN','NOUN']):
@@ -124,15 +137,62 @@ class TextProcessor:
         '''
         Driving loops are as follows; each one checks if it was processed in the earlier loop or not
         NERs
-        Compound Nouns
+        Compound Nouns ?
         Proper Nouns
         Verb Phrases
         Nouns
         Pronouns or Dets?
         '''
         G = nx.Graph()
-        for key in spacy_data[NER]:
-            G.add_node(key, classification="Entity", type=spacy_data[NER][key] )
+        for index, row in text_df.iterrows():
+            
+            if row["TYPE"] == NER:
+                G.add_node(row["item"], classification="Entity", type=row["NER.type"])
+                
+                wd_instances_of = ast.literal_eval(row["wd_instances_of"])
+                for instance_of in wd_instances_of[:3]:
+                    G.add_node(instance_of, classification="Entity", type="InstanceOf")
+                    G.add_edge(row["item"],instance_of,type="InstanceOf")
+
+                wikiDataClasses = ast.literal_eval(row["wikiDataClasses"])
+                for wikiDataClass in wikiDataClasses[:3]:
+                    G.add_node(wikiDataClass, classification="Entity", type="wikiDataClass")
+                    G.add_edge(row["item"],wikiDataClass,type="wikiDataClass")
+
+                dbPediaTypes = ast.literal_eval(row["dbPediaTypes"])
+                for dbPediaType in dbPediaTypes[:3]:
+                    G.add_node(dbPediaType, classification="Entity", type="dbPediaType")
+                    G.add_edge(row["item"],dbPediaType,type="dbPediaType")
+
+            if str(row["compound_noun"]) != 'nan':
+                pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
+
+            if (row["TYPE"] == "TOKEN" and row["token.pos_"] in ["PROPN","NOUN"] and (row["item"] not in spacy_data["NER"])):
+                G.add_node(row["item"], classification="Entity")
+                
+                wd_instances_of = ast.literal_eval(row["wd_instances_of"])
+                for instance_of in wd_instances_of[:3]:
+                    G.add_node(instance_of, classification="Entity", type="InstanceOf")
+                    G.add_edge(row["item"],instance_of,type="InstanceOf")
+
+                wikiDataClasses = ast.literal_eval(row["wikiDataClasses"])
+                for wikiDataClass in wikiDataClasses[:3]:
+                    G.add_node(wikiDataClass, classification="Entity", type="wikiDataClass")
+                    G.add_edge(row["item"],wikiDataClass,type="wikiDataClass")
+
+                dbPediaTypes = ast.literal_eval(row["dbPediaTypes"])
+                for dbPediaType in dbPediaTypes[:3]:
+                    G.add_node(dbPediaType, classification="Entity", type="dbPediaType")
+                    G.add_edge(row["item"],dbPediaType,type="dbPediaType")
+
+                if (row["token.pos_"] == "NOUN") and str(row["conceptNetTypes"]) != 'nan':
+                    conceptNetTypes = ast.literal_eval(row["conceptNetTypes"])
+                    for conceptNetType in conceptNetTypes[:3]:
+                        G.add_node(conceptNetType, classification="Entity", type="conceptNetType")
+                        G.add_edge(row["item"],conceptNetType,type="conceptNetType")
+
+            if str(row["verb_phrase"]) != 'nan':
+                G.add_node(row["verb_phrase"], classification="Activity")
         
         for node in G.nodes(data=True):
             print(node)
@@ -270,8 +330,9 @@ class TextProcessor:
             entity_ids.append(entity['id'])
         
         records_dict = {}
+        # Put an empty list if wd does not find the entity
         if len(entity_ids)==0:
-            records_dict["wd_instances_of"] = "UNKNOWN"
+            records_dict["wd_instances_of"] = ["wd_UNKNOWN"]
             return records_dict
 
         entity_id = entity_ids[0] # First entity_id. If there are none, this will throw an error
@@ -306,7 +367,6 @@ class TextProcessor:
         except:
             conceptnet_list.append("UNKNOWN")
         return conceptnet_list
-
 
 def main():
     text=input("Para: ")
