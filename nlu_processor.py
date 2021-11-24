@@ -32,6 +32,7 @@ WIKIDATA_SPARQL_ENDPOINT_URL = "https://query.wikidata.org/sparql"
 # CONCEPTNET_API_ENDPOINT_URL = "http://api.conceptnet.io/c/en/" not using the Web API, but directly the local database & API
 CONCEPTNET_LOCAL_DB = "/Volumes/Surjit_SSD_1/tech/conceptnet.db"
 SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor.db"
+GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor.graphml"
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor.log'
 
 cn_l.connect(CONCEPTNET_LOCAL_DB)
@@ -72,17 +73,23 @@ class TextProcessor:
         self.COLUMNS = ["TYPE", "NER.type",
                     "item","token.dep_","token.pos_","token.head.text","token.lemma_",
                     "compound_noun","verb_phrase",
-                    "wd_instances_of","wikiDataClasses", "dbPediaTypes","conceptNetTypes",
+                    "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
                     "ts"]
         self.db = sqlite3.connect(SQL_LOCAL_DB)
+        self.G = nx.read_graphml(GRAPHML_PATH) # This line will throw an error if .graphml is not present
 
     def execute(self):
         for sentence in self.doc.sents:
-            spacy_data, text_df = self.process_sentence(sentence)
-            self.create_graph(spacy_data, text_df)
+            spacy_data, text_df = self.process_sentence(self.db, sentence)
+            self.create_graph(self.G, spacy_data, text_df)
+        
+        for node in self.G.nodes(data=True):
+            log.info(node)
+        # plot_graph(self.G)
+        nx.write_graphml(self.G, GRAPHML_PATH)
         return
 
-    def process_sentence(self, sentence):
+    def process_sentence(self, db, sentence):
         text_df = pd.DataFrame(columns=self.COLUMNS)
         # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
         spacy_data = self.get_spacy_data(sentence)
@@ -95,10 +102,10 @@ class TextProcessor:
         text_df = text_df.append(object_row, ignore_index=True)
         for item in spacy_data[NER]:
             ner_row = {"TYPE":NER, "item":item, "NER.type":spacy_data[NER][item], "ts" : datetime.now()}
+            ner_row["list_wdInstance"] = str(self.get_wikidata(item)['list_wdInstance'])
             wk_dict = self.wikifier(item)
-            ner_row["wikiDataClasses"] = str(wk_dict["wikiDataClasses"])
-            ner_row["dbPediaTypes"] = str(wk_dict["dbPediaTypes"])
-            ner_row["wd_instances_of"] = str(self.get_wikidata(item)['wd_instances_of'])
+            ner_row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
+            ner_row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
             text_df = text_df.append(ner_row, ignore_index=True)
 
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
@@ -110,12 +117,14 @@ class TextProcessor:
             
             # Processing nouns
             if(token.pos_ in ['PROPN','NOUN']):
+                row["list_wdInstance"] = str(self.get_wikidata(token.text)['list_wdInstance'])
+                
                 wk_dict = self.wikifier(token)
-                row["wikiDataClasses"] = str(wk_dict["wikiDataClasses"])
-                row["dbPediaTypes"] = str(wk_dict["dbPediaTypes"])
-                row["wd_instances_of"] = str(self.get_wikidata(token.text)['wd_instances_of'])
+                row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
+                row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
+                
                 if(token.pos_ == 'NOUN'):
-                    row["ConceptNetTypes"] = str(self.get_conceptnet_data(token.lemma_.lower()))
+                    row["list_conceptNetType"] = str(self.get_conceptnet_data(token.lemma_.lower()))
             # Processing compound nouns
             if(token.dep_ == 'compound'):
                 row["compound_noun"] = f"{token.text} {token.head.text}"
@@ -128,11 +137,11 @@ class TextProcessor:
             text_df = text_df.append(row, ignore_index=True)
         
         # Write the text_df to db
-        text_df.to_sql("paragraph",self.db,if_exists="append")
+        text_df.to_sql("paragraph", db, if_exists="append")
 
         return spacy_data, text_df
 
-    def create_graph(self, spacy_data, text_df):
+    def create_graph(self, G, spacy_data, text_df):
         ...
         '''
         Driving loops are as follows; each one checks if it was processed in the earlier loop or not
@@ -143,26 +152,12 @@ class TextProcessor:
         Nouns
         Pronouns or Dets?
         '''
-        G = nx.Graph()
         for index, row in text_df.iterrows():
             
             if row["TYPE"] == NER:
                 G.add_node(row["item"], classification="Entity", type=row["NER.type"])
                 
-                wd_instances_of = ast.literal_eval(row["wd_instances_of"])
-                for instance_of in wd_instances_of[:3]:
-                    G.add_node(instance_of, classification="Entity", type="InstanceOf")
-                    G.add_edge(row["item"],instance_of,type="InstanceOf")
-
-                wikiDataClasses = ast.literal_eval(row["wikiDataClasses"])
-                for wikiDataClass in wikiDataClasses[:3]:
-                    G.add_node(wikiDataClass, classification="Entity", type="wikiDataClass")
-                    G.add_edge(row["item"],wikiDataClass,type="wikiDataClass")
-
-                dbPediaTypes = ast.literal_eval(row["dbPediaTypes"])
-                for dbPediaType in dbPediaTypes[:3]:
-                    G.add_node(dbPediaType, classification="Entity", type="dbPediaType")
-                    G.add_edge(row["item"],dbPediaType,type="dbPediaType")
+                self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
             if str(row["compound_noun"]) != 'nan':
                 pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
@@ -170,33 +165,24 @@ class TextProcessor:
             if (row["TYPE"] == "TOKEN" and row["token.pos_"] in ["PROPN","NOUN"] and (row["item"] not in spacy_data["NER"])):
                 G.add_node(row["item"], classification="Entity")
                 
-                wd_instances_of = ast.literal_eval(row["wd_instances_of"])
-                for instance_of in wd_instances_of[:3]:
-                    G.add_node(instance_of, classification="Entity", type="InstanceOf")
-                    G.add_edge(row["item"],instance_of,type="InstanceOf")
+                self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-                wikiDataClasses = ast.literal_eval(row["wikiDataClasses"])
-                for wikiDataClass in wikiDataClasses[:3]:
-                    G.add_node(wikiDataClass, classification="Entity", type="wikiDataClass")
-                    G.add_edge(row["item"],wikiDataClass,type="wikiDataClass")
-
-                dbPediaTypes = ast.literal_eval(row["dbPediaTypes"])
-                for dbPediaType in dbPediaTypes[:3]:
-                    G.add_node(dbPediaType, classification="Entity", type="dbPediaType")
-                    G.add_edge(row["item"],dbPediaType,type="dbPediaType")
-
-                if (row["token.pos_"] == "NOUN") and str(row["conceptNetTypes"]) != 'nan':
-                    conceptNetTypes = ast.literal_eval(row["conceptNetTypes"])
-                    for conceptNetType in conceptNetTypes[:3]:
-                        G.add_node(conceptNetType, classification="Entity", type="conceptNetType")
-                        G.add_edge(row["item"],conceptNetType,type="conceptNetType")
+                if (row["token.pos_"] == "NOUN") and str(row["list_conceptNetType"]) != 'nan':
+                    self.add_meta_nodes(G, row, ["conceptNetType"])
+                
+            if(row["token.pos_"] == "PRON"):
+                G.add_node(row["item"], classification="Entity", type="EntityPointer")
 
             if str(row["verb_phrase"]) != 'nan':
                 G.add_node(row["verb_phrase"], classification="Activity")
-        
-        for node in G.nodes(data=True):
-            print(node)
-        plot_graph(G)
+    
+
+    def add_meta_nodes(self, G, row, sources):
+        for source in sources:
+            label_list = ast.literal_eval(row[f"list_{source}"])
+            for label in label_list[:3]:
+                G.add_node(label, classification="EntityType", type=source)
+                G.add_edge(row["item"],label,type=source)
 
         
     # My own function invented to create the best chunks out of the sentences
@@ -288,7 +274,7 @@ class TextProcessor:
             # }
 
         # results = filter_wikifier_response(response)
-        wk_dict = {"wikiDataClasses":[],"dbPediaTypes":[]}
+        wk_dict = {"list_wikiDataClass":[],"list_dbPediaType":[]}
         for record in response["annotations"]:
             # print(record)
             wdClassList = []
@@ -297,8 +283,8 @@ class TextProcessor:
                 wdClassList.append(item['enLabel'])
             dbpTypeList = record['dbPediaTypes']
 
-            wk_dict['wikiDataClasses'].extend(wdClassList)
-            wk_dict['dbPediaTypes'].extend(dbpTypeList)
+            wk_dict['list_wikiDataClass'].extend(wdClassList)
+            wk_dict['list_dbPediaType'].extend(dbpTypeList)
 
         return wk_dict
 
@@ -332,7 +318,7 @@ class TextProcessor:
         records_dict = {}
         # Put an empty list if wd does not find the entity
         if len(entity_ids)==0:
-            records_dict["wd_instances_of"] = ["wd_UNKNOWN"]
+            records_dict["list_wdInstance"] = ["wd_UNKNOWN"]
             return records_dict
 
         entity_id = entity_ids[0] # First entity_id. If there are none, this will throw an error
@@ -354,8 +340,9 @@ class TextProcessor:
             col2_list.append(column2)
             records_dict[column1] = col2_list
         
-        records_dict["wd_instances_of"] = list(records_dict.keys())
-
+        records_dict["list_wdInstance"] = list(records_dict.keys())
+        
+        log.debug(records_dict)
         return records_dict
 
     def get_conceptnet_data(self, text):
@@ -374,21 +361,6 @@ def main():
         tp = TextProcessor(text)
         tp.execute()
         print("Done...")
-        # spacy_data = get_spacy_data(doc)
-        # log.info(spacy_data)
-        # G = nx.Graph()
-        
-        # nouns = process_nouns(spacy_data[NOUN])
-        # log.debug(nouns)
-        # G.add_nodes_from(nouns, type="Entity")
-        
-        # activities = process_verb_phrases(spacy_data[VERB_PHRASE])
-        # log.debug(activities)
-        # G.add_nodes_from(activities, type="Activity")
-        # for node in G.nodes(data=True):
-        #     log.info(node)
-        # plot_graph(G)
-
         text = input("Para: ")
 
 if __name__=="__main__":
