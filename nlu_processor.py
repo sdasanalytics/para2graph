@@ -4,23 +4,24 @@
 # Program: artmind
 #----------------------------#
 
+from copy import Error
 from loguru import logger as log
 import spacy
 from string import punctuation
 import sys
+from spacy.util import raise_error
 from timefhuman import timefhuman as th
 import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 import sqlite3
+import uuid
 from datetime import datetime
 import ast
 import external_kbs
+import openpyxl
 
-# WIKIFIER_URL = "http://www.wikifier.org/annotate-article"
-# WIKIDATA_API_ENDPOINT_URL = "https://www.wikidata.org/w/api.php"
-# WIKIDATA_SPARQL_ENDPOINT_URL = "https://query.wikidata.org/sparql"
-SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.db"
+SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor2.db"
 GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.graphml"
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
 
@@ -43,8 +44,8 @@ EXCLUSIONS = ["det", "punct"]
 # "attr" removed from OBJECTS list. It is further qualifying a predicate or verb
 
 # cn_l.connect(CONCEPTNET_LOCAL_DB)
-log.add(sys.stderr, format="xx{time} {level} {message}", level="INFO")
-log.add(LOG_PATH, format="{time} {level} {message}", level="INFO")
+log.add(sys.stderr, format="xx{time} {level} {message}", level="DEBUG")
+log.add(LOG_PATH, format="{time} {level} {message}", level="DEBUG")
 
 def plot_graph(G, title=None):
     # set figure size
@@ -73,16 +74,20 @@ def plot_graph(G, title=None):
 # ----------------------------------------------------
 
 class TextProcessor:
-    def __init__(self, text):
-        self.text = text
-        log.debug(text)
-        nlp = spacy.load("en_core_web_trf")
-        self.doc = nlp(text)
-        self.COLUMNS = ["TYPE", "NER.type",
-                    "item","token.dep_","token.pos_","token.head.text","token.lemma_",
+    def __init__(self):
+        self.nlp = spacy.load("en_core_web_trf")
+        self.COLUMNS = ["sentence_uuid", "TYPE", "NER_type",
+                    "item","token_dep","token_pos","token_head_text","token_lemma",
                     "compound_noun","verb_phrase",
                     "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
                     "ts"]
+        self.COLUMNS_PARA = ["sentence_uuid", "TYPE", "NER_type",
+                    "item","token_dep","token_pos","token_head_text","token_lemma",
+                    "compound_noun","verb_phrase",
+                    "ts"]
+        self.COLUMNS_KBS = ["item",
+                    "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
+                    "ts"]                                        
         self.db = sqlite3.connect(SQL_LOCAL_DB)
         self.G = nx.read_graphml(GRAPHML_PATH) # This line will throw an error if .graphml is not present
         self.kbs = external_kbs.Explorer()
@@ -94,24 +99,89 @@ class TextProcessor:
                 G.add_node(label, classification="EntityType", type=source)
                 G.add_edge(row["item"],label,type=source)
 
-    def process_tokens(self, sentence, text_df):
+    def algo1_execute(self, text):
+        log.debug(f"Processing text: {text}")
+        doc = self.nlp(text)
+        for sentence in doc.sents:
+            sentence_uuid = str(uuid.uuid4())
+            spacy_data, text_df = self.algo1_process_sentence(self.db, sentence_uuid, sentence)
+            self.algo1_create_graph(self.G, spacy_data, text_df)
+        nx.write_graphml(self.G, GRAPHML_PATH)
+        
+        # for node in self.G.nodes(data=True):
+        #     log.debug(node)
+        # plot_graph(self.G)
+        
+        return
+
+    def algo1_process_sentence(self, db, sentence_uuid, sentence):
+        text_df = pd.DataFrame(columns=self.COLUMNS)
+        # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
+        spo_data = self.algo1_spacy_data(sentence)
+        spo_row = {"sentence_uuid":sentence_uuid, "TYPE":"SPO", "item": str(spo_data), "ts" : datetime.now()}
+        text_df = text_df.append(spo_row, ignore_index=True)
+
+        for ent in sentence.ents:
+            ner_row = {"sentence_uuid":sentence_uuid, "TYPE":NER, "item":ent.text, "NER_type":ent.label_, "ts" : datetime.now()}
+            sql_str = f"select * from external_kbs where item='{ent.text}'"
+            df = pd.read_sql(sql_str, db)
+            if len(df) == 0:
+                ner_row["list_wdInstance"] = str(self.kbs.get_wikidata(ent.text)['list_wdInstance'])
+                wk_dict = self.kbs.wikifier(ent.text)
+                ner_row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
+                ner_row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
+                text_df = text_df.append(ner_row, ignore_index=True)
+                kbs_dict = {"item":[ent.text], 
+                            "list_wdInstance": [ner_row["list_wdInstance"]], "list_wikiDataClass": [ner_row["list_wikiDataClass"]], "list_dbPediaType": [ner_row["list_dbPediaType"]],
+                            "ts" : [datetime.now()]}
+                kbs_df = pd.DataFrame(kbs_dict)
+                kbs_df.to_sql("external_kbs", db, index=False, if_exists="append")
+            else:
+                ner_row["list_wdInstance"] = df["list_wdInstance"][0]
+                ner_row["list_wikiDataClass"] = df["list_wikiDataClass"][0]
+                ner_row["list_dbPediaType"] = df["list_dbPediaType"][0]
+
+        text_df = self.process_tokens(db, sentence_uuid, sentence, text_df)
+        
+        # Write the text_df to db
+        para_df = text_df[self.COLUMNS_PARA]
+        para_df.to_sql("sentences", db, index=False, if_exists="append")
+
+        # return spacy_data, text_df
+        return spo_data, text_df
+
+    def process_tokens(self, db, sentence_uuid, sentence, text_df):
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in sentence:
             log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
-            
-            row = {"TYPE":"TOKEN","item":token.text,"token.dep_":token.dep_,"token.pos_":token.pos_,"token.head.text":token.head.text,"token.lemma_":token.lemma_}
+            sql_str = f"select * from external_kbs where item='{token.text}'"
+            df = pd.read_sql(sql_str, db)
+            row = {"sentence_uuid":sentence_uuid, "TYPE":"TOKEN","item":token.text,"token_dep":token.dep_,"token_pos":token.pos_,"token_head_text":token.head.text,"token_lemma":token.lemma_}
             
             # Processing nouns
             if(token.pos_ in ['PROPN','NOUN']):
-                row["list_wdInstance"] = str(self.kbs.get_wikidata(token.text)['list_wdInstance'])
-                
-                wk_dict = self.kbs.wikifier(token)
-                row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
-                row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
-                
-                if(token.pos_ == 'NOUN'):
-                    row["list_conceptNetType"] = str(self.kbs.get_conceptnet_data(token.lemma_.lower()))
+                if len(df) == 0:
+                    row["list_wdInstance"] = str(self.kbs.get_wikidata(token.text)['list_wdInstance'])
+                    
+                    wk_dict = self.kbs.wikifier(token)
+                    row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
+                    row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
+                    kbs_dict = {"item":[token.text], 
+                            "list_wdInstance": [row["list_wdInstance"]], "list_wikiDataClass": [row["list_wikiDataClass"]], "list_dbPediaType": [row["list_dbPediaType"]],
+                            "ts" : [datetime.now()]}
+                    if(token.pos_ == 'NOUN'):
+                        row["list_conceptNetType"] = str(self.kbs.get_conceptnet_data(token.lemma_.lower()))
+                        kbs_dict["list_conceptNetType"] = [row["list_conceptNetType"]]
+
+                    kbs_df = pd.DataFrame(kbs_dict)
+                    kbs_df.to_sql("external_kbs", db, index=False, if_exists="append")
+                else:
+                    row["list_wdInstance"] = df["list_wdInstance"][0]
+                    row["list_wikiDataClass"] = df["list_wikiDataClass"][0]
+                    row["list_dbPediaType"] = df["list_dbPediaType"][0]
+                    row["list_conceptNetType"] = df["list_dbPediaType"][0]
+                    
             # Processing compound nouns
             if(token.dep_ == 'compound'):
                 row["compound_noun"] = f"{token.text} {token.head.text}"
@@ -123,44 +193,6 @@ class TextProcessor:
             row["ts"] = datetime.now()
             text_df = text_df.append(row, ignore_index=True)
         return text_df
-
-    def algo1_execute(self):
-        for sentence in self.doc.sents:
-            spacy_data, text_df = self.algo1_process_sentence(self.db, sentence)
-            self.algo1_create_graph(self.G, spacy_data, text_df)
-        nx.write_graphml(self.G, GRAPHML_PATH)
-        
-        # for node in self.G.nodes(data=True):
-        #     log.debug(node)
-        # plot_graph(self.G)
-        
-        return
-
-    def algo1_process_sentence(self, db, sentence):
-        text_df = pd.DataFrame(columns=self.COLUMNS)
-        # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
-        spacy_data = self.algo1_spacy_data(sentence)
-        # row = {SUBJECT: str(spacy_data[SUBJECT]), PREDICATE: str(spacy_data[PREDICATE]), OBJECT: str(spacy_data[OBJECT]), NER: str(spacy_data[NER]), "ts" : datetime.now()}
-        subject_row = {"TYPE":SUBJECT, "item": str(spacy_data[SUBJECT]), "ts" : datetime.now()}
-        text_df = text_df.append(subject_row, ignore_index=True)
-        predicate_row = {"TYPE":PREDICATE, "item": str(spacy_data[PREDICATE]), "ts" : datetime.now()}
-        text_df = text_df.append(predicate_row, ignore_index=True)
-        object_row = {"TYPE":OBJECT, "item": str(spacy_data[OBJECT]), "ts" : datetime.now()}
-        text_df = text_df.append(object_row, ignore_index=True)
-        for item in spacy_data[NER]:
-            ner_row = {"TYPE":NER, "item":item, "NER.type":spacy_data[NER][item], "ts" : datetime.now()}
-            ner_row["list_wdInstance"] = str(self.kbs.get_wikidata(item)['list_wdInstance'])
-            wk_dict = self.kbs.wikifier(item)
-            ner_row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
-            ner_row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
-            text_df = text_df.append(ner_row, ignore_index=True)
-
-        text_df = self.process_tokens(sentence, text_df)
-        
-        # Write the text_df to db
-        text_df.to_sql("paragraph", db, if_exists="append")
-
-        return spacy_data, text_df
 
     def algo1_create_graph(self, G, spacy_data, text_df):
         ...
@@ -179,22 +211,22 @@ class TextProcessor:
         for index, row in text_df.iterrows():
             
             if row["TYPE"] == NER:
-                G.add_node(row["item"], classification="Entity", type=row["NER.type"])
+                G.add_node(row["item"], classification="Entity", type=row["NER_type"])
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
             if str(row["compound_noun"]) != 'nan':
                 pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
 
-            if (row["TYPE"] == "TOKEN" and row["token.pos_"] in ["PROPN","NOUN"] and (row["item"] not in spacy_data["NER"])):
+            if (row["TYPE"] == "TOKEN" and row["token_pos"] in ["PROPN","NOUN"] and (row["item"] not in spacy_data["NER"])):
                 G.add_node(row["item"], classification="Entity")
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-                if (row["token.pos_"] == "NOUN") and str(row["list_conceptNetType"]) != 'nan':
+                if (row["token_pos"] == "NOUN") and str(row["list_conceptNetType"]) != 'nan':
                     self.add_meta_nodes(G, row, ["conceptNetType"])
                 
-            if(row["token.pos_"] == "PRON"):
+            if(row["token_pos"] == "PRON"):
                 G.add_node(row["item"], classification="Entity", type="EntityPointer")
 
             if str(row["verb_phrase"]) != 'nan':
@@ -240,7 +272,8 @@ class TextProcessor:
         spacy_data = {
                 SUBJECT:subject,
                 PREDICATE:predicate,
-                OBJECT:object_,
+                OBJECT:object_
+                ,
                 NER: ner_dict
                 }
         
@@ -263,13 +296,56 @@ class TextProcessor:
             key = PREDICATE
         return key
 
+    def get_processor(self, algo):
+        if (algo=="algo1"):
+            return self.algo1_execute
+        else:
+            raise Error(f"Can't find suggested algo {algo}")
+
+
+    '''
+    Thinking of the following flow:
+
+    ToDo:
+    - Change the database schema
+        1. processed_text
+            - have sentence id
+            - token id
+        2. external_kbs
+        3. view joining the above on item
+    - Lookup external_kbs table for item before going to internet apis
+    - Make this a CLI app using Typer
+    - Graph database
+        - decision neo4j or arangodb?? - https://medium.com/neo4j/nxneo4j-networkx-api-for-neo4j-a-new-chapter-9fc65ddab222
+    
+    '''
+
 def main():
-    text=input("Para: ")
-    while(text!="/stop"):
-        tp = TextProcessor(text)
-        tp.algo1_execute()
-        print("Done...")
-        text = input("Para: ")
+    if len(sys.argv) < 3:
+        print("Please provide params:\n1) algo_name(algo1|algo2)\n2)interaction_type (inline|file)\n3) if param2 is file - provide full filepath")
+        exit(0)
+    tp = TextProcessor()
+
+    if sys.argv[2] == "file":
+        if len(sys.argv) != 4:
+            print("Please provide full filename as 3rd parameter")
+            exit(0)
+        
+        with open(sys.argv[3]) as fp: 
+            lines = fp.readlines() 
+            for line in lines:
+                processor = tp.get_processor(sys.argv[1])
+                processor(line)
+                log.info(f"Processing line: {line}")
+        log.info("Done")
+    else:
+        text=input("Para: ")
+        while(text!="/stop"):
+            # tp.algo1_execute(text)
+            processor = tp.get_processor(sys.argv[1])
+            processor(text)
+            print("Done...")
+            text = input("Para: ")
 
 if __name__=="__main__":
     main()
