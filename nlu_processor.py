@@ -21,7 +21,7 @@ import ast
 import external_kbs
 import openpyxl
 
-SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor2.db"
+SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db"
 GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.graphml"
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
 
@@ -123,8 +123,9 @@ class TextProcessor:
 
         for ent in sentence.ents:
             ner_row = {"sentence_uuid":sentence_uuid, "TYPE":NER, "item":ent.text, "NER_type":ent.label_, "ts" : datetime.now()}
-            sql_str = f"select * from external_kbs where item='{ent.text}'"
-            df = pd.read_sql(sql_str, db)
+            sql_str = f"select * from external_kbs where item=?"
+            params = (ent.text,)
+            df = pd.read_sql(sql_str, db, params=params)
             if len(df) == 0:
                 ner_row["list_wdInstance"] = str(self.kbs.get_wikidata(ent.text)['list_wdInstance'])
                 wk_dict = self.kbs.wikifier(ent.text)
@@ -155,8 +156,9 @@ class TextProcessor:
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in sentence:
             log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
-            sql_str = f"select * from external_kbs where item='{token.text}'"
-            df = pd.read_sql(sql_str, db)
+            sql_str = f"select * from external_kbs where item=?"
+            params = (token.text,)
+            df = pd.read_sql(sql_str, db, params=params)
             row = {"sentence_uuid":sentence_uuid, "TYPE":"TOKEN","item":token.text,"token_dep":token.dep_,"token_pos":token.pos_,"token_head_text":token.head.text,"token_lemma":token.lemma_}
             
             # Processing nouns
@@ -296,9 +298,20 @@ class TextProcessor:
             key = PREDICATE
         return key
 
+    def algo2_execute(self, text):
+        log.debug(f"Processing text: {text}")
+        doc = self.nlp(text)
+        for sentence in doc.sents:
+            sentence_uuid = str(uuid.uuid4())
+            spacy_data, text_df = self.algo1_process_sentence(self.db, sentence_uuid, sentence)
+            self.algo1_create_graph(self.G, spacy_data, text_df)
+        nx.write_graphml(self.G, GRAPHML_PATH)
+
     def get_processor(self, algo):
         if (algo=="algo1"):
             return self.algo1_execute
+        elif (algo=="algo2"):
+            return self.algo2_execute
         else:
             raise Error(f"Can't find suggested algo {algo}")
 
