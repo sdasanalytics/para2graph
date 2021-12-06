@@ -26,6 +26,7 @@ GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.graphml"
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
 
 NER = "NER"
+SPO = "SPO"
 
 ROOT = "ROOT"
 SUBJECT = "SUBJECT"
@@ -36,14 +37,13 @@ MODIFIER = "MODIFIER"
 SUBJECTS = ["nsubj", "nsubjpass", "csubj", "csubjpass", "agent", "expl"]
 OBJECTS = ["dobj", "pobj", "dative", "oprd", "attr"] #attr - is an interesting one as Object, removing this makes attr as PREDICATE
 COMPOUNDS = ["compound"]
-MODIFIERS = ["amod", "advmod"]
+MODIFIERS = ["amod", "advmod", "nummod", "npadvmod"]
 EXCLUSIONS = ["det", "punct"]
 # ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm",
 #               "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"]
 # PREPOSITIONS = ["prep"]
 # "attr" removed from OBJECTS list. It is further qualifying a predicate or verb
 
-# cn_l.connect(CONCEPTNET_LOCAL_DB)
 log.add(sys.stderr, format="xx{time} {level} {message}", level="DEBUG")
 log.add(LOG_PATH, format="{time} {level} {message}", level="DEBUG")
 
@@ -89,7 +89,8 @@ class TextProcessor:
                     "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
                     "ts"]                                        
         self.db = sqlite3.connect(SQL_LOCAL_DB)
-        self.G = nx.read_graphml(GRAPHML_PATH) # This line will throw an error if .graphml is not present
+        # self.G = nx.read_graphml(GRAPHML_PATH) # This line will throw an error if .graphml is not present
+        self.G = nx.MultiDiGraph()
         self.kbs = external_kbs.Explorer()
 
     def add_meta_nodes(self, G, row, sources):
@@ -118,9 +119,12 @@ class TextProcessor:
         text_df = pd.DataFrame(columns=self.COLUMNS)
         # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
         spo_data = self.algo1_spacy_data(sentence)
-        spo_row = {"sentence_uuid":sentence_uuid, "TYPE":"SPO", "item": str(spo_data), "ts" : datetime.now()}
+        spo_row = {"sentence_uuid":sentence_uuid, "TYPE":SPO, "item": str(spo_data), "ts" : datetime.now()}
         text_df = text_df.append(spo_row, ignore_index=True)
+        text_df = self.process_ners_tokens(db, sentence_uuid, sentence, text_df)
+        return spo_data, text_df
 
+    def process_ners_tokens(self, db, sentence_uuid, sentence, text_df):
         for ent in sentence.ents:
             ner_row = {"sentence_uuid":sentence_uuid, "TYPE":NER, "item":ent.text, "NER_type":ent.label_, "ts" : datetime.now()}
             sql_str = f"select * from external_kbs where item=?"
@@ -131,7 +135,7 @@ class TextProcessor:
                 wk_dict = self.kbs.wikifier(ent.text)
                 ner_row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
                 ner_row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
-                text_df = text_df.append(ner_row, ignore_index=True)
+                
                 kbs_dict = {"item":[ent.text], 
                             "list_wdInstance": [ner_row["list_wdInstance"]], "list_wikiDataClass": [ner_row["list_wikiDataClass"]], "list_dbPediaType": [ner_row["list_dbPediaType"]],
                             "ts" : [datetime.now()]}
@@ -141,15 +145,15 @@ class TextProcessor:
                 ner_row["list_wdInstance"] = df["list_wdInstance"][0]
                 ner_row["list_wikiDataClass"] = df["list_wikiDataClass"][0]
                 ner_row["list_dbPediaType"] = df["list_dbPediaType"][0]
+            
+            text_df = text_df.append(ner_row, ignore_index=True)
 
         text_df = self.process_tokens(db, sentence_uuid, sentence, text_df)
         
         # Write the text_df to db
         para_df = text_df[self.COLUMNS_PARA]
         para_df.to_sql("sentences", db, index=False, if_exists="append")
-
-        # return spacy_data, text_df
-        return spo_data, text_df
+        return text_df
 
     def process_tokens(self, db, sentence_uuid, sentence, text_df):
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
@@ -244,11 +248,15 @@ class TextProcessor:
         log.debug("|chunk.text|chunk.root|chunk.root.dep_|")
         for chunk in doc.noun_chunks:
             log.debug(f"|{chunk.text:30}|{chunk.root.text:12}|{chunk.root.dep_:10}|")
+            # log.debug(dir(chunk))
             if 'subj' in chunk.root.dep_:
                 subject.append(chunk.text)
                 subject_words = chunk.text.split()
             elif 'obj' in chunk.root.dep_:
-                object_.append(chunk.text)
+                if 'dobj' in chunk.root.dep_:
+                    object_.append(f"{chunk.text} {chunk.root.text}")
+                else:
+                    object_.append(chunk.text)
             else:
                 predicate.append(chunk.text)
         
@@ -282,6 +290,14 @@ class TextProcessor:
         log.debug(spacy_data)
         return spacy_data
     
+    def breakit(self, item):
+        key = ""
+        value = ""
+        for x, y in item.items():
+            key = x
+            value = y
+        return key, value
+
     def algo2_get_keytype(self, dep):
         key = ""
         if dep == ROOT:
@@ -302,10 +318,101 @@ class TextProcessor:
         log.debug(f"Processing text: {text}")
         doc = self.nlp(text)
         for sentence in doc.sents:
+            log.debug(f"sentence=")
             sentence_uuid = str(uuid.uuid4())
-            spacy_data, text_df = self.algo1_process_sentence(self.db, sentence_uuid, sentence)
-            self.algo1_create_graph(self.G, spacy_data, text_df)
-        nx.write_graphml(self.G, GRAPHML_PATH)
+            spo_data, subject_data = self.algo2_process_sentence(self.db, sentence_uuid, sentence)
+            sql_str = "select * from vw_sentences where sentence_uuid = ?"
+            params = (sentence_uuid, )
+            vw_text_df = pd.read_sql(sql_str, self.db, params=params)
+            # log.debug(f"{vw_text_df=}")
+            # log.debug(f"{str(vw_text_df['item'])=}")
+            # self.algo1_create_graph(self.G, spacy_data, text_df)
+        # nx.write_graphml(self.G, GRAPHML_PATH)
+
+    def algo2_process_sentence(self, db, sentence_uuid, sentence):
+        text_df = pd.DataFrame(columns=self.COLUMNS)
+        # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
+        context, spo_data, subject_data = self.algo2_spo_data(sentence)
+        spo_context_row = {"sentence_uuid":sentence_uuid, "TYPE":SPO+"CONTEXT", "item": f"{str(context)}", "ts" : datetime.now()}
+        text_df = text_df.append(spo_context_row, ignore_index=True)
+        spo_row = {"sentence_uuid":sentence_uuid, "TYPE":SPO, "item": f"{str(spo_data)} {subject_data}", "ts" : datetime.now()}
+        text_df = text_df.append(spo_row, ignore_index=True)
+        text_df = self.process_ners_tokens(db, sentence_uuid, sentence, text_df)
+        return spo_data, subject_data
+
+    def algo2_spo_data(self, sentence):
+        context=[{"ROOT":"x"}]
+        for token in sentence:
+            if (token.dep_ == "ROOT"):
+                log.debug(f"{token.text} is the root")
+                context = self.algo2_sentence_dfs(token,context=[{"ROOT":token.text}])
+        log.debug(f"Final context: {context}")
+        # log.debug(f"{context[0]=}")
+        
+        key0, value0 = self.breakit(context[0])
+        key2, value2 = self.breakit(context[2])
+        context_y = [context[1]]
+        if key2 == PREDICATE:
+            value2 = f"{value0} {value2}"
+            context_y.append({PREDICATE:value2})
+            context_y.extend(i for i in context[3:])
+        else:
+            context_y.append({PREDICATE:value0})
+            context_y.extend(i for i in context[2:])
+        log.debug(context_y)
+        
+        subject_q = []
+        spo_list = []
+        for item in context_y:
+            key, value = self.breakit(item)
+            if key == SUBJECT:
+                subject_q.append(value)
+                spo_list.append([value])
+            elif key == PREDICATE:
+                spo_list[-1].append(value)
+            elif key == OBJECT:
+                spo_list[-1].append(value)
+                spo_list.append([subject_q[-1]])
+
+        log.debug(f"{spo_list[:-1]=}")
+        log.debug(f"{subject_q=}")
+        return context, spo_list[:-1], subject_q
+
+    def algo2_sentence_dfs(self, token, context):
+        item = {}
+        key = self.algo2_get_keytype(token.dep_)
+        for x,y in context[-1].items():
+            last_key = x
+            last_value = y
+        log.debug(f"{key=}, {token.text=}, {context=}, {last_key=}:{last_value=}")
+        if key == ROOT:
+            log.debug("Skipping as key is ROOT...")
+        elif last_key != key:
+            if (key == COMPOUND): 
+                value = f"{token.text} {last_value}"
+                log.debug(f"COMPOUND : {last_key}:{value}")
+                context[-1] = {last_key:value}
+            elif (key == MODIFIER and token in token.head.lefts):
+                value = f"{token.text} {last_value}"
+                log.debug(f"MODIFIER : {last_key}:{value}")
+                context[-1] = {last_key:value}
+            else:
+                if key == MODIFIER:
+                    key = PREDICATE
+                item[key] = token.text
+                log.debug(f"context.append({item=})")
+                context.append(item)
+        else: # if last_key == key
+            value = f"{last_value} {token.text}"
+            log.debug(f"if last_key == key: {key=}:{value=}")
+            context[-1] = {key:value}
+        log.debug(f"context after adding: {context}")
+
+        for child in token.children:
+            log.debug(f"exploring child {child.text}")
+            if(child.dep_ not in EXCLUSIONS):
+                self.algo2_sentence_dfs(child,context)
+        return context
 
     def get_processor(self, algo):
         if (algo=="algo1"):
@@ -315,18 +422,11 @@ class TextProcessor:
         else:
             raise Error(f"Can't find suggested algo {algo}")
 
-
     '''
     Thinking of the following flow:
 
     ToDo:
-    - Change the database schema
-        1. processed_text
-            - have sentence id
-            - token id
-        2. external_kbs
-        3. view joining the above on item
-    - Lookup external_kbs table for item before going to internet apis
+    - For really large sentences the spo algo doesn't work well. Think of pre-processing to break it down to smaller sentences
     - Make this a CLI app using Typer
     - Graph database
         - decision neo4j or arangodb?? - https://medium.com/neo4j/nxneo4j-networkx-api-for-neo4j-a-new-chapter-9fc65ddab222
@@ -348,8 +448,8 @@ def main():
             lines = fp.readlines() 
             for line in lines:
                 processor = tp.get_processor(sys.argv[1])
-                processor(line)
                 log.info(f"Processing line: {line}")
+                processor(line.rstrip())
         log.info("Done")
     else:
         text=input("Para: ")

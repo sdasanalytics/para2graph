@@ -81,7 +81,7 @@ class Explorer:
         for record in response["annotations"]:
             # print(record)
             wdClassList = []
-            wikiDataClasses = record['wikiDataClasses']
+            wikiDataClasses = record.get('wikiDataClasses',[])
             for item in wikiDataClasses:
                 wdClassList.append(item['enLabel'])
             dbpTypeList = record['dbPediaTypes']
