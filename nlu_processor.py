@@ -21,12 +21,18 @@ import uuid
 from datetime import datetime
 import ast
 import external_kbs
-import openpyxl
+
+from neo4j import GraphDatabase
+import nxneo4j as nxneo
 
 SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db"
 GEXF_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.gexf"
 GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.graphml"
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
+
+NEO4J_USER = 'neo4j'
+NEO4J_PASSWORD = "unonothing"
+NEO4J_URI = "bolt://localhost:7687"
 
 
 log.remove() #removes default handlers
@@ -151,6 +157,26 @@ class TextProcessor:
                     G.add_nodes_from([tail])
                     link = (head,label,{TYPE:source})
                     G.add_edges_from([link])
+
+    def save_graph(self, G, mode="append"):
+        driver = GraphDatabase.driver(uri=NEO4J_URI,auth=(NEO4J_USER,NEO4J_PASSWORD))
+        Gnxn = nxneo.Graph(driver) 
+        
+        if mode == "append":
+            G = nx.read_gexf(GEXF_PATH)
+        else:
+            Gnxn.delete_all()
+        
+        nx.write_gexf(G, GEXF_PATH)
+        
+        node_list=[]
+        edge_list=[]
+        for node in self.G.nodes(data=True):
+            node_list.append(node)
+        for edge in self.G.edges(data=True):
+            edge_list.append(edge)
+        Gnxn.add_nodes_from(node_list)
+        Gnxn.add_edges_from(edge_list)
 
     def algo1_execute(self, text):
         log.debug(f"Processing text: {text}")
@@ -444,8 +470,7 @@ class TextProcessor:
             G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
             self.G = nx.compose(self.G, G_sent)
 
-        nx.write_gexf(self.G, GEXF_PATH)
-        # nx.write_graphml(self.G, GRAPHML_PATH)
+            self.save_graph(self.G, mode="overwrite")
 
     def algo3_sentencer(self, doc):
         DEP_SUBJECTS = ["nsubj", "nsubjpass", "csubj", "csubjpass", "agent", "expl"]
@@ -671,7 +696,6 @@ class TextProcessor:
         
         return G
 
-
     def get_processor(self, algo):
         if (algo=="algo1"):
             return self.algo1_execute
@@ -681,17 +705,6 @@ class TextProcessor:
             return self.algo3_execute
         else:
             raise Error(f"Can't find suggested algo {algo}")
-
-    '''
-    Thinking of the following flow:
-
-    ToDo:
-    - For really large sentences the spo algo doesn't work well. Think of pre-processing to break it down to smaller sentences - I think algo3 solves it
-    - Make this a CLI app using Typer
-    - Graph database
-        - decision neo4j or arangodb?? - https://medium.com/neo4j/nxneo4j-networkx-api-for-neo4j-a-new-chapter-9fc65ddab222
-    
-    '''
 
 def main():
     if len(sys.argv) < 3:
