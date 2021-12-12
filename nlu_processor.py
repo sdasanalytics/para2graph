@@ -6,12 +6,8 @@
 
 from copy import Error
 from loguru import logger as log
-from networkx.generators.small import heawood_graph
-from networkx.readwrite.gexf import GEXF
 import spacy
-from string import punctuation
 import sys
-from spacy.util import raise_error
 from timefhuman import timefhuman as th
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -21,9 +17,7 @@ import uuid
 from datetime import datetime
 import ast
 import external_kbs
-
-from neo4j import GraphDatabase
-import nxneo4j as nxneo
+import py2neo as p2n
 
 SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db"
 GEXF_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.gexf"
@@ -36,7 +30,7 @@ NEO4J_URI = "bolt://localhost:7687"
 
 
 log.remove() #removes default handlers
-log.add(LOG_PATH, format="{time} {level} {message}", level="DEBUG")
+log.add(LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
 
 NER = "NER"
 SPO = "SPO"
@@ -58,14 +52,16 @@ EXCLUSIONS = ["det", "punct"]
 # "attr" removed from OBJECTS list. It is further qualifying a predicate or verb
 
 ENTITY = "Entity"
+ENTITYTYPE = "EntityType"
 LINK = "Link"
 ATTRIBUTE = "Attribute"
 ACTIVITY = "Activity"
-LABEL = "Label"
+NODE_TEXT = "Label"
 LINK_LABEL = "Link_Label"
-CLASSIFICATION = "Classification"
-TYPE = "Type"
+CLASSIFICATION = "classification"
+TYPE = "type"
 NOUN = "Noun"
+PHRASE = "Phrase"
 
 def plot_graph(G, title=None):
     # set figure size
@@ -153,30 +149,45 @@ class TextProcessor:
             for label in label_list[:3]:
                 if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'wd_UNKNOWN']:
                     head = row["item"]
-                    tail = (label, {CLASSIFICATION:"EntityType", TYPE:source})
+                    tail = (label, {CLASSIFICATION:ENTITYTYPE, TYPE:source})
                     G.add_nodes_from([tail])
                     link = (head,label,{TYPE:source})
                     G.add_edges_from([link])
 
-    def save_graph(self, G, mode="append"):
-        driver = GraphDatabase.driver(uri=NEO4J_URI,auth=(NEO4J_USER,NEO4J_PASSWORD))
-        Gnxn = nxneo.Graph(driver) 
+    def save_graph(self, mode="append"):
+        G_p2n = p2n.Graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
         
         if mode == "append":
-            G = nx.read_gexf(GEXF_PATH)
+            self.G = nx.read_gexf(GEXF_PATH)
         else:
-            Gnxn.delete_all()
+            G_p2n.delete_all()
         
-        nx.write_gexf(G, GEXF_PATH)
-        
-        node_list=[]
-        edge_list=[]
+        nx.write_gexf(self.G, GEXF_PATH)
+
         for node in self.G.nodes(data=True):
-            node_list.append(node)
+            log.debug(f"{node=}")
+            n4j_node_label = node[1].get(TYPE, PHRASE)
+            n4j_node_name = node[0]
+            p2n_node = p2n.Node(n4j_node_label, name=n4j_node_name, classification=node[1][CLASSIFICATION])
+            G_p2n.create(p2n_node)
+
         for edge in self.G.edges(data=True):
-            edge_list.append(edge)
-        Gnxn.add_nodes_from(node_list)
-        Gnxn.add_edges_from(edge_list)
+            log.debug(f"{edge=}")
+            head_name = edge[0]
+            head_n4j_node_label = self.G.nodes[head_name].get(TYPE, PHRASE)
+            head_n4j_node = G_p2n.nodes.match(head_n4j_node_label, name=head_name).first()
+
+            tail_name = edge[1]
+            tail_n4j_node_label = self.G.nodes[tail_name].get(TYPE, PHRASE)
+            tail_n4j_node = G_p2n.nodes.match(tail_n4j_node_label, name=tail_name).first()
+            
+            n4j_rel_name = edge[2].get(LINK_LABEL,"-")
+            if n4j_rel_name == '':
+                n4j_rel_name = "-"
+            rel = p2n.Relationship.type(n4j_rel_name)
+            n4j_rel_type = edge[2].get(TYPE,PREDICATE)
+            link = rel(head_n4j_node, tail_n4j_node, type=n4j_rel_type)
+            G_p2n.create(link)         
 
     def algo1_execute(self, text):
         log.debug(f"Processing text: {text}")
@@ -470,9 +481,12 @@ class TextProcessor:
             G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
             self.G = nx.compose(self.G, G_sent)
 
-            self.save_graph(self.G, mode="overwrite")
-
     def algo3_sentencer(self, doc):
+        '''
+        This algorithm should be fine tuned further for links
+        Right now all Objects are linked to Subject or Attr of Subjects. 
+        TODO: But would be good to have Object chaining links till next Subject is found
+        '''
         DEP_SUBJECTS = ["nsubj", "nsubjpass", "csubj", "csubjpass", "agent", "expl"]
         POS_LINKS = ["AUX","ADP", "CCONJ", "PART"] # more research might be needed here. could do a mix of POS & DEP
         DEP_OBJECTS = ["pobj", "dative","oprd"]
@@ -492,7 +506,12 @@ class TextProcessor:
         current_phrase = ""
         source_link = ""
         last_subject = ""
+        
         doc = self.algo3_pre_process_sentence(doc)
+        log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
+        for token in doc:
+            log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
+
         for token in doc:
             if token.dep_ == "punct":
                 continue
@@ -504,9 +523,9 @@ class TextProcessor:
                 
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    dict_triplet = [{LABEL: last_subject, CLASSIFICATION:ENTITY} ,
-                            {LABEL: link_phrase, TYPE: LINK},
-                            {LABEL: current_phrase.lstrip(), CLASSIFICATION:ENTITY}]
+                    dict_triplet = [{NODE_TEXT: last_subject, CLASSIFICATION:ENTITY} ,
+                            {NODE_TEXT: link_phrase, TYPE: LINK},
+                            {NODE_TEXT: current_phrase.lstrip(), CLASSIFICATION:ENTITY}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
                     dict_triplets.append(dict_triplet)
@@ -547,7 +566,7 @@ class TextProcessor:
 
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                dict_triplet = [{LABEL:subject_phrase, CLASSIFICATION:ENTITY}, {LABEL: link_phrase, TYPE: LINK}, {LABEL:attribute_phrase, CLASSIFICATION:ATTRIBUTE}]
+                dict_triplet = [{NODE_TEXT:subject_phrase, CLASSIFICATION:ENTITY}, {NODE_TEXT: link_phrase, TYPE: LINK}, {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}]
                 log.debug(f"8. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -559,10 +578,10 @@ class TextProcessor:
                 phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                 right = {}
                 if len(object_phrase) > 0:
-                    right = {LABEL:object_phrase, CLASSIFICATION:ENTITY}
+                    right = {NODE_TEXT:object_phrase, CLASSIFICATION:ENTITY}
                 if len(activity_phrase):
-                    right = {LABEL:activity_phrase, CLASSIFICATION:ACTIVITY}
-                dict_triplet = [{LABEL:source_link, CLASSIFICATION:ENTITY},{LABEL: link_phrase, TYPE: LINK}, right]
+                    right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
+                dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, TYPE: LINK}, right]
                 log.debug(f"9. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -574,14 +593,14 @@ class TextProcessor:
             phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
             right = {}
             if len(attribute_phrase) > 0:
-                right = {LABEL:attribute_phrase, CLASSIFICATION:ATTRIBUTE}
+                right = {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}
             if len(object_phrase)>0:
-                right = {LABEL:object_phrase, CLASSIFICATION:ENTITY}
+                right = {NODE_TEXT:object_phrase, CLASSIFICATION:ENTITY}
             if len(activity_phrase)>0:
-                right = {LABEL:activity_phrase, CLASSIFICATION:ACTIVITY}
+                right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
             if len(current_phrase) > 0:
-                right = {LABEL:current_phrase, CLASSIFICATION:ATTRIBUTE}
-            dict_triplet = [{LABEL:source_link, CLASSIFICATION:ENTITY},{LABEL: link_phrase, TYPE: LINK}, right]
+                right = {NODE_TEXT:current_phrase, CLASSIFICATION:ATTRIBUTE}
+            dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, TYPE: LINK}, right]
             log.debug(f"11. {dict_triplet=}")
             phrase_triplets.append(phrase_triplet)
             dict_triplets.append(dict_triplet)            
@@ -595,7 +614,7 @@ class TextProcessor:
     # for number of loops and then doc is reparsed to find new indexes of the case, etc.
     def algo3_pre_process_sentence(self, doc):
         
-        POS_NOUN_CHUNK_MODIFIERS = ["NOUN","PROPN","ADJ", "ADV"]
+        POS_NOUN_CHUNK_MODIFIERS = ["NOUN","PROPN","ADJ", "ADV", "NUM"]
         DEP_APOSTROPHE = 'case'
         
         log.debug(f"pre_processing: {[[token.i, token.text, token.pos_, token.dep_] for token in doc]}")
@@ -610,6 +629,7 @@ class TextProcessor:
             sentence = sentence.replace(" '", "'")
             doc = self.nlp(sentence)
             cases = [token.i for token in doc if token.dep_=="case"]
+            log.debug(f"{cases=}")
             case = cases[0] # Since we are popping each case at the end of the loop, the cases[0] always addresses next case
             
             # Find the noun chunk BEFORE case
@@ -619,14 +639,15 @@ class TextProcessor:
                     noun_chunk_1.append(token.i)
                 else:
                     break  
-    
+            log.debug(f"{noun_chunk_1=}")
             # Find the noun chunk AFTER case
             noun_chunk_2 = []
             for token in doc[case+1:] :
                 noun_chunk_2.append(token.i)
                 if token.pos_ in ["NOUN", "PROPN"]:
                     break
-
+            log.debug(f"{noun_chunk_2=}")
+            
             pop_from = noun_chunk_1[-1]
             insert_at = noun_chunk_2[-1]+1
             words.insert(insert_at, "of")
@@ -648,14 +669,10 @@ class TextProcessor:
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
-            nodes = [(triplet[0][LABEL], {CLASSIFICATION:triplet[0][CLASSIFICATION]}),(triplet[2][LABEL], {CLASSIFICATION:triplet[2][CLASSIFICATION]})]
-            link = (triplet[0][LABEL], triplet[2][LABEL], {LINK_LABEL:triplet[1][LABEL]})
+            nodes = [(triplet[0][NODE_TEXT], {CLASSIFICATION:triplet[0][CLASSIFICATION]}),(triplet[2][NODE_TEXT], {CLASSIFICATION:triplet[2][CLASSIFICATION]})]
+            link = (triplet[0][NODE_TEXT], triplet[2][NODE_TEXT], {LINK_LABEL:triplet[1][NODE_TEXT]})
             G.add_nodes_from(nodes)
             G.add_edges_from([link])
-
-            # G.add_nodes([(head[LABEL], {CLASSIFICATION:head[CLASSIFICATION]})])
-            # G.add_node(tail[LABEL], Classification=tail[CLASSIFICATION])
-            # G.add_edge(head[LABEL], tail[LABEL], Label=link[LABEL])
 
         ner_list = []
         for index, row in text_df.iterrows():
@@ -706,6 +723,7 @@ class TextProcessor:
         else:
             raise Error(f"Can't find suggested algo {algo}")
 
+@log.catch
 def main():
     if len(sys.argv) < 3:
         print("Please provide params:\n1) algo_name(algo1|algo2)\n2)interaction_type (inline|file)\n3) if param2 is file - provide full filepath")
@@ -718,20 +736,21 @@ def main():
             exit(0)
         
         with open(sys.argv[3]) as fp: 
+            processor = tp.get_processor(sys.argv[1])
             lines = fp.readlines() 
             for line in lines:
-                processor = tp.get_processor(sys.argv[1])
                 log.info(f"Processing line: {line}")
-                processor(line.rstrip())
+                processor(line.strip())
+            tp.save_graph(mode="overwrite")
         log.info("Done")
     else:
         text=input("Para: ")
+        processor = tp.get_processor(sys.argv[1])
         while(text!="/stop"):
-            # tp.algo1_execute(text)
-            processor = tp.get_processor(sys.argv[1])
             processor(text)
             print("Done...")
             text = input("Para: ")
+        tp.save_graph(mode="overwrite")
 
 if __name__=="__main__":
     main()
