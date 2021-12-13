@@ -4,6 +4,7 @@
 # Program: artmind
 #----------------------------#
 
+import constants as C
 from loguru import logger as log
 import conceptnet_lite as cn_l
 import urllib
@@ -13,13 +14,7 @@ import sys
 import requests
 from SPARQLWrapper import SPARQLWrapper, JSON
 
-WIKIFIER_URL = "http://www.wikifier.org/annotate-article"
-WIKIDATA_API_ENDPOINT_URL = "https://www.wikidata.org/w/api.php"
-WIKIDATA_SPARQL_ENDPOINT_URL = "https://query.wikidata.org/sparql"
-# CONCEPTNET_API_ENDPOINT_URL = "http://api.conceptnet.io/c/en/" not using the Web API, but directly the local database & API
-CONCEPTNET_LOCAL_DB = "/Volumes/Surjit_SSD_1/tech/conceptnet.db"
-
-cn_l.connect(CONCEPTNET_LOCAL_DB)
+cn_l.connect(C.CONCEPTNET_LOCAL_DB)
 
 class Explorer:
     def __init__(self) -> None:
@@ -51,33 +46,35 @@ class Explorer:
         ])
     
         # Call the Wikifier and read the response.
-        req = urllib.request.Request(WIKIFIER_URL, data=data.encode("utf8"), method="POST")
+        req = urllib.request.Request(C.WIKIFIER_URL, data=data.encode("utf8"), method="POST")
         with urllib.request.urlopen(req, timeout=60) as f:
             response = f.read()
             response = json.loads(response.decode("utf8"))
         
         log.debug(data)
         log.debug(response)
-            # The response is of the following JSON format
-            # {'annotations': 
-            #     [
-            #         {
-            #             'title': 'Diwali', 'url': 'http://en.wikipedia.org/wiki/Diwali', ...
-            #             'wikiDataClasses': [
-            #                                 {'itemId': 'Q132241', 'enLabel': 'festival'},
-            #                                 {'itemId': 'Q1445650', 'enLabel': 'holiday'},
-            #                                 {'itemId': 'Q15275719', 'enLabel': 'recurring event'}, ...
-            #                                 ],
-            #             'dbPediaTypes': ['Holiday'],
-            #             'dbPediaIri': 'http://dbpedia.org/resource/Apple', ...
-            #         }
-            #     ],
-            #     'spaces': ['', ' ', ''],
-            #     'words': ['Diwali'],...
-            # }
-
+        """
+            The response is of the following JSON format
+            {'annotations': 
+                [
+                    {
+                        'title': 'Diwali', 'url': 'http://en.wikipedia.org/wiki/Diwali', ...
+                        'wikiDataClasses': [
+                                            {'itemId': 'Q132241', 'enLabel': 'festival'},
+                                            {'itemId': 'Q1445650', 'enLabel': 'holiday'},
+                                            {'itemId': 'Q15275719', 'enLabel': 'recurring event'}, ...
+                                            ],
+                        'dbPediaTypes': ['Holiday'],
+                        'dbPediaIri': 'http://dbpedia.org/resource/Apple', ...
+                    }
+                ],
+                'spaces': ['', ' ', ''],
+                'words': ['Diwali'],...
+            }
+        """
+        
         # results = filter_wikifier_response(response)
-        wk_dict = {"list_wikiDataClass":[],"list_dbPediaType":[]}
+        wk_dict = {C.COL_WIKIDATACLASS:[],C.COL_DBPEDIA:[]}
         for record in response["annotations"]:
             # print(record)
             wdClassList = []
@@ -86,8 +83,8 @@ class Explorer:
                 wdClassList.append(item['enLabel'])
             dbpTypeList = record['dbPediaTypes']
 
-            wk_dict['list_wikiDataClass'].extend(wdClassList)
-            wk_dict['list_dbPediaType'].extend(dbpTypeList)
+            wk_dict[C.COL_WIKIDATACLASS].extend(wdClassList)
+            wk_dict[C.COL_DBPEDIA].extend(dbpTypeList)
 
         return wk_dict
 
@@ -95,7 +92,7 @@ class Explorer:
     def get_sparql_results(self, query):
         user_agent = "WDQS-example Python/%s.%s" % (sys.version_info[0], sys.version_info[1])
         # TODO adjust user agent; see https://w.wiki/CX6
-        sparql = SPARQLWrapper(WIKIDATA_SPARQL_ENDPOINT_URL, agent=user_agent)
+        sparql = SPARQLWrapper(C.WIKIDATA_SPARQL_ENDPOINT_URL, agent=user_agent)
         sparql.setQuery(query)
         sparql.setReturnFormat(JSON)
         return sparql.query().convert()
@@ -111,7 +108,7 @@ class Explorer:
             'search': text,
             'limit': limit
         }
-        response = requests.get(WIKIDATA_API_ENDPOINT_URL, params=params)
+        response = requests.get(C.WIKIDATA_API_ENDPOINT_URL, params=params)
         response_json = response.json()
         log.debug(f"get_wikidata::response_json: {response_json}")
         entity_ids = []
@@ -121,7 +118,7 @@ class Explorer:
         records_dict = {}
         # Put an empty list if wd does not find the entity
         if len(entity_ids)==0:
-            records_dict["list_wdInstance"] = ["wd_UNKNOWN"]
+            records_dict[C.COL_WDINSTANCE] = ["wd_UNKNOWN"]
             return records_dict
 
         entity_id = entity_ids[0] # First entity_id. If there are none, this will throw an error
@@ -143,7 +140,7 @@ class Explorer:
             col2_list.append(column2)
             records_dict[column1] = col2_list
         
-        records_dict["list_wdInstance"] = list(records_dict.keys())
+        records_dict[C.COL_WDINSTANCE] = list(records_dict.keys())
         
         log.debug(records_dict)
         return records_dict

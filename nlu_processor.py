@@ -5,6 +5,7 @@
 #----------------------------#
 
 from copy import Error
+import constants as C
 from loguru import logger as log
 import spacy
 import sys
@@ -19,21 +20,8 @@ import ast
 import external_kbs
 import py2neo as p2n
 
-SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db"
-GEXF_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.gexf"
-GRAPHML_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.graphml"
-LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
-
-NEO4J_USER = 'neo4j'
-NEO4J_PASSWORD = "unonothing"
-NEO4J_URI = "bolt://localhost:7687"
-
-
 log.remove() #removes default handlers
-log.add(LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
-
-NER = "NER"
-SPO = "SPO"
+log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
 
 ROOT = "ROOT"
 SUBJECT = "SUBJECT"
@@ -56,12 +44,13 @@ ENTITYTYPE = "EntityType"
 LINK = "Link"
 ATTRIBUTE = "Attribute"
 ACTIVITY = "Activity"
-NODE_TEXT = "Label"
+NODE_TEXT = "Node_Text"
 LINK_LABEL = "Link_Label"
 CLASSIFICATION = "classification"
 TYPE = "type"
 NOUN = "Noun"
 PHRASE = "Phrase"
+N4J_NODE_NAME = "name"
 
 def plot_graph(G, title=None):
     # set figure size
@@ -91,56 +80,43 @@ def plot_graph(G, title=None):
 
 class TextProcessor:
     def __init__(self):
-        self.nlp = spacy.load("en_core_web_trf")
-        self.COLUMNS = ["sentence_uuid", "TYPE", "NER_type",
-                    "item","token_dep","token_pos","token_head_text","token_lemma",
-                    "compound_noun","verb_phrase",
-                    "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
-                    "ts"]
-        self.COLUMNS_PARA = ["sentence_uuid", "TYPE", "NER_type",
-                    "item","token_dep","token_pos","token_head_text","token_lemma",
-                    "compound_noun","verb_phrase",
-                    "ts"]
-        self.COLUMNS_KBS = ["item",
-                    "list_wdInstance","list_wikiDataClass", "list_dbPediaType","list_conceptNetType",
-                    "ts"]                                        
-        self.db = sqlite3.connect(SQL_LOCAL_DB)
-        # self.G = nx.read_gexf(GEXF_PATH) # This line will throw an error if .gexf is not present
+        self.nlp = spacy.load(C.SPACY_MODEL)
+        self.db = sqlite3.connect(C.SQL_LOCAL_DB)
         self.G = nx.MultiDiGraph()
         self.kbs = external_kbs.Explorer()
 
     def process_save_ners_tokens(self, sentence_uuid, sentence, parsed_context):
-        text_df = pd.DataFrame(columns=self.COLUMNS)
-        parsed_context_row = {"sentence_uuid":sentence_uuid, "TYPE":"PARSED", "item": str(parsed_context), "ts" : datetime.now()}
+        text_df = pd.DataFrame(columns=C.COLUMNS_DF)
+        parsed_context_row = {C.COL_SENT_UUID:sentence_uuid, C.COL_TYPE:C.COL_TYPE_VAL_PARSED, C.COL_ITEM: str(parsed_context), C.COL_TS : datetime.now()}
         text_df = text_df.append(parsed_context_row, ignore_index=True)
         for ent in sentence.ents:
-            ner_row = {"sentence_uuid":sentence_uuid, "TYPE":NER, "item":ent.text, "NER_type":ent.label_, "ts" : datetime.now()}
-            sql_str = f"select * from external_kbs where item=?"
+            ner_row = {C.COL_SENT_UUID:sentence_uuid, C.COL_TYPE:C.NER, C.COL_ITEM:ent.text, C.COL_NER_TYPE:ent.label_, C.COL_TS : datetime.now()}
+            sql_str = f"select * from {C.TAB_EXT_KBS} where {C.COL_ITEM}=?"
             params = (ent.text,)
             df = pd.read_sql(sql_str, self.db, params=params)
             if len(df) == 0:
-                ner_row["list_wdInstance"] = str(self.kbs.get_wikidata(ent.text)['list_wdInstance'])
+                ner_row[C.COL_WDINSTANCE] = str(self.kbs.get_wikidata(ent.text)[C.COL_WDINSTANCE])
                 wk_dict = self.kbs.wikifier(ent.text)
-                ner_row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
-                ner_row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
+                ner_row[C.COL_WIKIDATACLASS] = str(wk_dict[C.COL_WIKIDATACLASS])
+                ner_row[C.COL_DBPEDIA] = str(wk_dict[C.COL_DBPEDIA])
                 
-                kbs_dict = {"item":[ent.text], 
-                            "list_wdInstance": [ner_row["list_wdInstance"]], "list_wikiDataClass": [ner_row["list_wikiDataClass"]], "list_dbPediaType": [ner_row["list_dbPediaType"]],
-                            "ts" : [datetime.now()]}
+                kbs_dict = {C.COL_ITEM:[ent.text], 
+                            C.COL_WDINSTANCE: [ner_row[C.COL_WDINSTANCE]], C.COL_WIKIDATACLASS: [ner_row[C.COL_WIKIDATACLASS]], C.COL_DBPEDIA: [ner_row[C.COL_DBPEDIA]],
+                            C.COL_TS : [datetime.now()]}
                 kbs_df = pd.DataFrame(kbs_dict)
-                kbs_df.to_sql("external_kbs", self.db, index=False, if_exists="append")
+                kbs_df.to_sql(C.TAB_EXT_KBS, self.db, index=False, if_exists="append")
             else:
-                ner_row["list_wdInstance"] = df["list_wdInstance"][0]
-                ner_row["list_wikiDataClass"] = df["list_wikiDataClass"][0]
-                ner_row["list_dbPediaType"] = df["list_dbPediaType"][0]
+                ner_row[C.COL_WDINSTANCE] = df[C.COL_WDINSTANCE][0]
+                ner_row[C.COL_WIKIDATACLASS] = df[C.COL_WIKIDATACLASS][0]
+                ner_row[C.COL_DBPEDIA] = df[C.COL_DBPEDIA][0]
             
             text_df = text_df.append(ner_row, ignore_index=True)
 
         text_df = self.process_tokens(sentence_uuid, sentence, text_df)
         
         # Write the text_df to db
-        para_df = text_df[self.COLUMNS_PARA]
-        para_df.to_sql("sentences", self.db, index=False, if_exists="append")
+        para_df = text_df[C.COLUMNS_PARA]
+        para_df.to_sql(C.TAB_SENTENCES, self.db, index=False, if_exists="append")
         return text_df
 
     def add_meta_nodes(self, G, row, sources):
@@ -148,27 +124,28 @@ class TextProcessor:
             label_list = ast.literal_eval(row[f"list_{source}"])
             for label in label_list[:3]:
                 if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'wd_UNKNOWN']:
-                    head = row["item"]
+                    head = row[C.COL_ITEM]
                     tail = (label, {CLASSIFICATION:ENTITYTYPE, TYPE:source})
                     G.add_nodes_from([tail])
                     link = (head,label,{TYPE:source})
                     G.add_edges_from([link])
 
     def save_graph(self, mode="append"):
-        G_p2n = p2n.Graph(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        G_p2n = p2n.Graph(C.NEO4J_URI, auth=(C.NEO4J_USER, C.NEO4J_PASSWORD))
         
         if mode == "append":
-            self.G = nx.read_gexf(GEXF_PATH)
+            self.G = nx.read_gexf(C.GEXF_PATH)
         else:
             G_p2n.delete_all()
         
-        nx.write_gexf(self.G, GEXF_PATH)
+        nx.write_gexf(self.G, C.GEXF_PATH)
 
         for node in self.G.nodes(data=True):
             log.debug(f"{node=}")
             n4j_node_label = node[1].get(TYPE, PHRASE)
             n4j_node_name = node[0]
-            p2n_node = p2n.Node(n4j_node_label, name=n4j_node_name, classification=node[1][CLASSIFICATION])
+            attrs = {N4J_NODE_NAME:n4j_node_name, CLASSIFICATION:node[1][CLASSIFICATION]}
+            p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
 
         for edge in self.G.edges(data=True):
@@ -196,7 +173,7 @@ class TextProcessor:
             sentence_uuid = str(uuid.uuid4())
             spacy_data, text_df = self.algo1_process_sentence(sentence_uuid, sentence)
             self.algo1_create_graph(self.G, spacy_data, text_df)
-        nx.write_gexf(self.G, GEXF_PATH)
+        nx.write_gexf(self.G, C.GEXF_PATH)
         
         # for node in self.G.nodes(data=True):
         #     log.debug(node)
@@ -205,7 +182,7 @@ class TextProcessor:
         return
 
     def algo1_process_sentence(self, sentence_uuid, sentence):
-        # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
+        # Add subject, predicate, object & C.NER to the dataframe - as 1st row for the para/sentence
         spo_data = self.algo1_spacy_data(sentence)
         text_df = self.process_save_ners_tokens(sentence_uuid, sentence, spo_data)
         return spo_data, text_df
@@ -215,43 +192,44 @@ class TextProcessor:
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in sentence:
             log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
-            sql_str = f"select * from external_kbs where item=?"
+            sql_str = f"select * from {C.TAB_EXT_KBS} where {C.COL_ITEM}=?"
             params = (token.text,)
             df = pd.read_sql(sql_str, self.db, params=params)
-            row = {"sentence_uuid":sentence_uuid, "TYPE":"TOKEN","item":token.text,"token_dep":token.dep_,"token_pos":token.pos_,"token_head_text":token.head.text,"token_lemma":token.lemma_}
+            row = {C.COL_SENT_UUID:sentence_uuid, C.COL_TYPE:C.COL_TYPE_VAL_TOKEN, C.COL_ITEM:token.text, 
+                    C.COL_TOKEN_DEP:token.dep_, C.COL_TOKEN_POS:token.pos_, C.COL_TOKEN_HEAD_TEXT:token.head.text, C.COL_TOKEN_LEMMA:token.lemma_}
             
             # Processing nouns
-            if(token.pos_ in ['PROPN','NOUN']):
+            if(token.pos_ in [C.POS_PROPER_NOUN,C.POS_NOUN]):
                 if len(df) == 0:
-                    row["list_wdInstance"] = str(self.kbs.get_wikidata(token.text)['list_wdInstance'])
+                    row[C.COL_WDINSTANCE] = str(self.kbs.get_wikidata(token.text)[C.COL_WDINSTANCE])
                     
                     wk_dict = self.kbs.wikifier(token)
-                    row["list_wikiDataClass"] = str(wk_dict["list_wikiDataClass"])
-                    row["list_dbPediaType"] = str(wk_dict["list_dbPediaType"])
-                    kbs_dict = {"item":[token.text], 
-                            "list_wdInstance": [row["list_wdInstance"]], "list_wikiDataClass": [row["list_wikiDataClass"]], "list_dbPediaType": [row["list_dbPediaType"]],
-                            "ts" : [datetime.now()]}
-                    if(token.pos_ == 'NOUN'):
-                        row["list_conceptNetType"] = str(self.kbs.get_conceptnet_data(token.lemma_.lower()))
-                        kbs_dict["list_conceptNetType"] = [row["list_conceptNetType"]]
+                    row[C.COL_WIKIDATACLASS] = str(wk_dict[C.COL_WIKIDATACLASS])
+                    row[C.COL_DBPEDIA] = str(wk_dict[C.COL_DBPEDIA])
+                    kbs_dict = {C.COL_ITEM:[token.text], 
+                            C.COL_WDINSTANCE: [row[C.COL_WDINSTANCE]], C.COL_WIKIDATACLASS: [row[C.COL_WIKIDATACLASS]], C.COL_DBPEDIA: [row[C.COL_DBPEDIA]],
+                            C.COL_TS : [datetime.now()]}
+                    if(token.pos_ == C.POS_NOUN):
+                        row[C.COL_CONCEPTNET] = str(self.kbs.get_conceptnet_data(token.lemma_.lower()))
+                        kbs_dict[C.COL_CONCEPTNET] = [row[C.COL_CONCEPTNET]]
 
                     kbs_df = pd.DataFrame(kbs_dict)
-                    kbs_df.to_sql("external_kbs", self.db, index=False, if_exists="append")
+                    kbs_df.to_sql(C.TAB_EXT_KBS, self.db, index=False, if_exists="append")
                 else:
-                    row["list_wdInstance"] = df["list_wdInstance"][0]
-                    row["list_wikiDataClass"] = df["list_wikiDataClass"][0]
-                    row["list_dbPediaType"] = df["list_dbPediaType"][0]
-                    row["list_conceptNetType"] = df["list_dbPediaType"][0]
+                    row[C.COL_WDINSTANCE] = df[C.COL_WDINSTANCE][0]
+                    row[C.COL_WIKIDATACLASS] = df[C.COL_WIKIDATACLASS][0]
+                    row[C.COL_DBPEDIA] = df[C.COL_DBPEDIA][0]
+                    row[C.COL_CONCEPTNET] = df[C.COL_DBPEDIA][0]
                     
             # Processing compound nouns
-            if(token.dep_ == 'compound'):
-                row["compound_noun"] = f"{token.text} {token.head.text}"
+            if(token.dep_ == C.DEP_COMPOUND):
+                row[C.COL_COMP_NOUN] = f"{token.text} {token.head.text}"
             
             # Processing verb phrases
-            if (token.dep_ == 'dobj') :
-                row["verb_phrase"] = f"{token.head.text} {token.text}"
+            if (token.dep_ == C.DEP_DOBJ) :
+                row[C.COL_VERB_PHRASE] = f"{token.head.text} {token.text}"
             
-            row["ts"] = datetime.now()
+            row[C.COL_TS] = datetime.now()
             text_df = text_df.append(row, ignore_index=True)
         return text_df
 
@@ -271,27 +249,27 @@ class TextProcessor:
         '''
         for index, row in text_df.iterrows():
             
-            if row["TYPE"] == NER:
-                G.add_node(row["item"], Classification="Entity", Type=row["NER_type"])
+            if row[C.COL_TYPE] == C.NER:
+                G.add_node(row[C.COL_ITEM], Classification="Entity", Type=row[C.COL_NER_TYPE])
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-            if str(row["compound_noun"]) != 'nan':
+            if str(row[C.COL_COMP_NOUN]) != 'nan':
                 pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
 
-            if (row["TYPE"] == "TOKEN" and row["token_pos"] in ["PROPN","NOUN"] and (row["item"] not in spacy_data["NER"])):
-                G.add_node(row["item"], Classification="Entity")
+            if (row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in ["PROPN","NOUN"] and (row[C.COL_ITEM] not in spacy_data["C.NER"])):
+                G.add_node(row[C.COL_ITEM], Classification="Entity")
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-                if (row["token_pos"] == "NOUN") and str(row["list_conceptNetType"]) != 'nan':
+                if (row[C.COL_TOKEN_POS] == "NOUN") and str(row[C.COL_CONCEPTNET]) != 'nan':
                     self.add_meta_nodes(G, row, ["conceptNetType"])
                 
-            if(row["token_pos"] == "PRON"):
-                G.add_node(row["item"], Classification="Entity", Type="EntityPointer")
+            if(row[C.COL_TOKEN_POS] == "PRON"):
+                G.add_node(row[C.COL_ITEM], Classification="Entity", Type="EntityPointer")
 
-            if str(row["verb_phrase"]) != 'nan':
-                G.add_node(row["verb_phrase"], Classification="Activity")
+            if str(row[C.COL_VERB_PHRASE]) != 'nan':
+                G.add_node(row[C.COL_VERB_PHRASE], Classification="Activity")
     
     # My own function invented to create the best chunks out of the sentences
     def algo1_spacy_data(self, doc):
@@ -339,7 +317,7 @@ class TextProcessor:
                 PREDICATE:predicate,
                 OBJECT:object_
                 ,
-                NER: ner_dict
+                C.NER: ner_dict
                 }
         
         log.debug(spacy_data)
@@ -376,16 +354,12 @@ class TextProcessor:
             log.debug(f"sentence=")
             sentence_uuid = str(uuid.uuid4())
             spo_data, subject_data = self.algo2_process_sentence(sentence_uuid, sentence)
-            sql_str = "select * from vw_sentences where sentence_uuid = ?"
+            sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
             params = (sentence_uuid, )
             vw_text_df = pd.read_sql(sql_str, self.db, params=params)
-            # log.debug(f"{vw_text_df=}")
-            # log.debug(f"{str(vw_text_df['item'])=}")
-            # self.algo1_create_graph(self.G, spacy_data, text_df)
-        # nx.write_graphml(self.G, GRAPHML_PATH)
 
     def algo2_process_sentence(self, sentence_uuid, sentence):
-        # Add subject, predicate, object & NER to the dataframe - as 1st row for the para/sentence
+        # Add subject, predicate, object & C.NER to the dataframe - as 1st row for the para/sentence
         context, spo_data, subject_data = self.algo2_spo_data(sentence)
         text_df = self.process_save_ners_tokens(sentence_uuid, sentence, [context, spo_data, subject_data])
         return spo_data, subject_data
@@ -475,7 +449,7 @@ class TextProcessor:
             log.debug(f"Executing {phrase_triplets=}, {dict_triplets=}")
             self.process_save_ners_tokens(sentence_uuid, sentence, [phrase_triplets, dict_triplets])
             
-            sql_str = "select * from vw_sentences where sentence_uuid = ?"
+            sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
             params = (sentence_uuid, )
             vw_text_df = pd.read_sql(sql_str, self.db, params=params)
             G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
@@ -492,7 +466,6 @@ class TextProcessor:
         DEP_OBJECTS = ["pobj", "dative","oprd"]
         DEP_ATTRIBUTES = ["attr"]
         DEP_ACTIVITIES = ["dobj"]
-        POS_NOUN = "NOUN"
         DEP_MODIFIERS = ["compound", "npadvmod"]
         ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm", "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"] # might need to add this to DEP_X_NOUNS
         DEP_X_NOUNS = DEP_OBJECTS + DEP_ATTRIBUTES + DEP_ACTIVITIES + DEP_MODIFIERS
@@ -547,7 +520,7 @@ class TextProcessor:
                 current_phrase = ""
                 log.debug(f"4.1 {object_phrase=}")
 
-            if token.pos_ == POS_NOUN and token.dep_ not in DEP_X_NOUNS:
+            if token.pos_ == C.POS_NOUN and token.dep_ not in DEP_X_NOUNS:
                 object_phrase = current_phrase.lstrip()
                 current_phrase = ""
                 log.debug(f"4.2 {object_phrase=}")                
@@ -644,7 +617,7 @@ class TextProcessor:
             noun_chunk_2 = []
             for token in doc[case+1:] :
                 noun_chunk_2.append(token.i)
-                if token.pos_ in ["NOUN", "PROPN"]:
+                if token.pos_ in [C.POS_PROPER_NOUN, C.POS_NOUN]:
                     break
             log.debug(f"{noun_chunk_2=}")
             
@@ -676,41 +649,38 @@ class TextProcessor:
 
         ner_list = []
         for index, row in text_df.iterrows():
-            if row["TYPE"] == NER:
-                ner_list.append(row["item"])
+            if row[C.COL_TYPE] == C.NER:
+                ner_list.append(row[C.COL_ITEM])
 
         for index, row in text_df.iterrows():            
-            if row["TYPE"] == NER:
-                ner_item = row["item"]
+            if row[C.COL_TYPE] == C.NER:
+                ner_item = row[C.COL_ITEM]
                 node_list = self.get_node(G, ner_item)
                 for node_label in node_list:
-                    node = (ner_item, {CLASSIFICATION:ENTITY, TYPE: row["NER_type"] })
+                    node = (ner_item, {CLASSIFICATION:ENTITY, TYPE: row[C.COL_NER_TYPE] })
                     G.add_nodes_from([node])
-                    # G.add_node(ner_item, Classification=ENTITY, Type=row["NER_type"]) # If same as original node entity, it will just add attribute
                     self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
                     if node_label != ner_item :
-                        link = (node_label, ner_item, {TYPE:NER})
+                        link = (node_label, ner_item, {TYPE:C.NER})
                         G.add_edges_from([link])
-                        # G.add_edge(node_label, ner_item, Type=NER)
+                        # G.add_edge(node_label, ner_item, Type=C.NER)
 
-            if row["TYPE"] == "TOKEN" and row["token_pos"] in ["PROPN","NOUN"] and row["item"] not in ner_list:
-                noun_item = row["item"]
+            if row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in [C.POS_PROPER_NOUN, C.POS_NOUN] and row[C.COL_ITEM] not in ner_list:
+                noun_item = row[C.COL_ITEM]
                 node_list = self.get_node(G, noun_item)
                 for node_label in node_list:
                     node = (noun_item, {CLASSIFICATION:ENTITY, TYPE:NOUN}) # If same as original node entity, it will just add attribute
                     G.add_nodes_from([node])
-                    # G.add_node(noun_item, Classification=ENTITY, Type="Noun") # If same as original node entity, it will just add attribute
                     self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-                    if (row["token_pos"] == "NOUN") and str(row["list_conceptNetType"]) != "None":
+                    if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
                         self.add_meta_nodes(G, row, ["conceptNetType"])
 
                     if node_label != noun_item :
                         link = (node_label, noun_item, {TYPE:NOUN})
                         G.add_edges_from([link])
-                        # G.add_edge(node_label, noun_item, Type="Noun")
-        
+
         return G
 
     def get_processor(self, algo):
