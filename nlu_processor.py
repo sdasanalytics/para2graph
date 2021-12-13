@@ -47,7 +47,7 @@ ACTIVITY = "Activity"
 NODE_TEXT = "Node_Text"
 LINK_LABEL = "Link_Label"
 CLASSIFICATION = "classification"
-TYPE = "type"
+TYPE = "source"
 NOUN = "Noun"
 PHRASE = "Phrase"
 N4J_NODE_NAME = "name"
@@ -163,7 +163,8 @@ class TextProcessor:
                 n4j_rel_name = "-"
             rel = p2n.Relationship.type(n4j_rel_name)
             n4j_rel_type = edge[2].get(TYPE,PREDICATE)
-            link = rel(head_n4j_node, tail_n4j_node, type=n4j_rel_type)
+            attrs = {TYPE:n4j_rel_type}
+            link = rel(head_n4j_node, tail_n4j_node, **attrs)
             G_p2n.create(link)         
 
     def algo1_execute(self, text):
@@ -250,7 +251,8 @@ class TextProcessor:
         for index, row in text_df.iterrows():
             
             if row[C.COL_TYPE] == C.NER:
-                G.add_node(row[C.COL_ITEM], Classification="Entity", Type=row[C.COL_NER_TYPE])
+                attrs = {CLASSIFICATION:ENTITY, TYPE:row[C.COL_NER_TYPE]}
+                G.add_node(row[C.COL_ITEM], **attrs)
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
@@ -258,7 +260,8 @@ class TextProcessor:
                 pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
 
             if (row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in ["PROPN","NOUN"] and (row[C.COL_ITEM] not in spacy_data["C.NER"])):
-                G.add_node(row[C.COL_ITEM], Classification="Entity")
+                attrs = {CLASSIFICATION:ENTITY}
+                G.add_node(row[C.COL_ITEM], **attrs)
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
@@ -266,10 +269,12 @@ class TextProcessor:
                     self.add_meta_nodes(G, row, ["conceptNetType"])
                 
             if(row[C.COL_TOKEN_POS] == "PRON"):
-                G.add_node(row[C.COL_ITEM], Classification="Entity", Type="EntityPointer")
+                attrs = {CLASSIFICATION:ENTITY, TYPE:"EntityPointer"}
+                G.add_node(row[C.COL_ITEM], **attrs)
 
             if str(row[C.COL_VERB_PHRASE]) != 'nan':
-                G.add_node(row[C.COL_VERB_PHRASE], Classification="Activity")
+                attrs = {CLASSIFICATION:ACTIVITY}
+                G.add_node(row[C.COL_VERB_PHRASE], **attrs)
     
     # My own function invented to create the best chunks out of the sentences
     def algo1_spacy_data(self, doc):
@@ -664,7 +669,6 @@ class TextProcessor:
                     if node_label != ner_item :
                         link = (node_label, ner_item, {TYPE:C.NER})
                         G.add_edges_from([link])
-                        # G.add_edge(node_label, ner_item, Type=C.NER)
 
             if row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in [C.POS_PROPER_NOUN, C.POS_NOUN] and row[C.COL_ITEM] not in ner_list:
                 noun_item = row[C.COL_ITEM]
