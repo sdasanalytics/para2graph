@@ -47,7 +47,7 @@ ACTIVITY = "Activity"
 NODE_TEXT = "Node_Text"
 LINK_LABEL = "Link_Label"
 CLASSIFICATION = "classification"
-TYPE = "source"
+SOURCE = "source"
 NOUN = "Noun"
 PHRASE = "Phrase"
 N4J_NODE_NAME = "name"
@@ -124,10 +124,10 @@ class TextProcessor:
             label_list = ast.literal_eval(row[f"list_{source}"])
             for label in label_list[:3]:
                 if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'wd_UNKNOWN']:
-                    head = row[C.COL_ITEM]
-                    tail = (label, {CLASSIFICATION:ENTITYTYPE, TYPE:source})
+                    head = "|"+row[C.COL_ITEM]+"|"
+                    tail = (label, {CLASSIFICATION:ENTITYTYPE, SOURCE:source})
                     G.add_nodes_from([tail])
-                    link = (head,label,{TYPE:source})
+                    link = (head,label,{SOURCE:source})
                     G.add_edges_from([link])
 
     def save_graph(self, mode="append"):
@@ -142,28 +142,30 @@ class TextProcessor:
 
         for node in self.G.nodes(data=True):
             log.debug(f"{node=}")
-            n4j_node_label = node[1].get(TYPE, PHRASE)
+            n4j_node_label = node[1].get(SOURCE, PHRASE)
             n4j_node_name = node[0]
-            attrs = {N4J_NODE_NAME:n4j_node_name, CLASSIFICATION:node[1][CLASSIFICATION]}
+            attrs = {N4J_NODE_NAME:n4j_node_name, CLASSIFICATION:node[1].get(CLASSIFICATION,"-")}
+            log.debug(f"{n4j_node_label=}, {attrs=}")
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
 
         for edge in self.G.edges(data=True):
             log.debug(f"{edge=}")
             head_name = edge[0]
-            head_n4j_node_label = self.G.nodes[head_name].get(TYPE, PHRASE)
+            head_n4j_node_label = self.G.nodes[head_name].get(SOURCE, PHRASE)
             head_n4j_node = G_p2n.nodes.match(head_n4j_node_label, name=head_name).first()
 
             tail_name = edge[1]
-            tail_n4j_node_label = self.G.nodes[tail_name].get(TYPE, PHRASE)
+            tail_n4j_node_label = self.G.nodes[tail_name].get(SOURCE, PHRASE)
             tail_n4j_node = G_p2n.nodes.match(tail_n4j_node_label, name=tail_name).first()
             
             n4j_rel_name = edge[2].get(LINK_LABEL,"-")
             if n4j_rel_name == '':
                 n4j_rel_name = "-"
             rel = p2n.Relationship.type(n4j_rel_name)
-            n4j_rel_type = edge[2].get(TYPE,PREDICATE)
-            attrs = {TYPE:n4j_rel_type}
+            n4j_rel_type = edge[2].get(SOURCE,PREDICATE)
+            attrs = {SOURCE:n4j_rel_type}
+            log.debug(f"{head_n4j_node=}, {tail_n4j_node=}, {attrs=}")
             link = rel(head_n4j_node, tail_n4j_node, **attrs)
             G_p2n.create(link)         
 
@@ -251,7 +253,7 @@ class TextProcessor:
         for index, row in text_df.iterrows():
             
             if row[C.COL_TYPE] == C.NER:
-                attrs = {CLASSIFICATION:ENTITY, TYPE:row[C.COL_NER_TYPE]}
+                attrs = {CLASSIFICATION:ENTITY, SOURCE:row[C.COL_NER_TYPE]}
                 G.add_node(row[C.COL_ITEM], **attrs)
                 
                 self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
@@ -269,7 +271,7 @@ class TextProcessor:
                     self.add_meta_nodes(G, row, ["conceptNetType"])
                 
             if(row[C.COL_TOKEN_POS] == "PRON"):
-                attrs = {CLASSIFICATION:ENTITY, TYPE:"EntityPointer"}
+                attrs = {CLASSIFICATION:ENTITY, SOURCE:"EntityPointer"}
                 G.add_node(row[C.COL_ITEM], **attrs)
 
             if str(row[C.COL_VERB_PHRASE]) != 'nan':
@@ -502,7 +504,7 @@ class TextProcessor:
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                     dict_triplet = [{NODE_TEXT: last_subject, CLASSIFICATION:ENTITY} ,
-                            {NODE_TEXT: link_phrase, TYPE: LINK},
+                            {NODE_TEXT: link_phrase, SOURCE: LINK},
                             {NODE_TEXT: current_phrase.lstrip(), CLASSIFICATION:ENTITY}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
@@ -544,7 +546,7 @@ class TextProcessor:
 
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                dict_triplet = [{NODE_TEXT:subject_phrase, CLASSIFICATION:ENTITY}, {NODE_TEXT: link_phrase, TYPE: LINK}, {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}]
+                dict_triplet = [{NODE_TEXT:subject_phrase, CLASSIFICATION:ENTITY}, {NODE_TEXT: link_phrase, SOURCE: LINK}, {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}]
                 log.debug(f"8. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -559,7 +561,7 @@ class TextProcessor:
                     right = {NODE_TEXT:object_phrase, CLASSIFICATION:ENTITY}
                 if len(activity_phrase):
                     right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
-                dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, TYPE: LINK}, right]
+                dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, SOURCE: LINK}, right]
                 log.debug(f"9. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -578,7 +580,7 @@ class TextProcessor:
                 right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
             if len(current_phrase) > 0:
                 right = {NODE_TEXT:current_phrase, CLASSIFICATION:ATTRIBUTE}
-            dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, TYPE: LINK}, right]
+            dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, SOURCE: LINK}, right]
             log.debug(f"11. {dict_triplet=}")
             phrase_triplets.append(phrase_triplet)
             dict_triplets.append(dict_triplet)            
@@ -644,11 +646,19 @@ class TextProcessor:
                 node_list.append(node_label)
         return node_list
 
+    def is_within(self, text, lst):
+        found = 0
+        for item in lst:
+            if text in item:
+                found = 1
+        return found
+
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
             nodes = [(triplet[0][NODE_TEXT], {CLASSIFICATION:triplet[0][CLASSIFICATION]}),(triplet[2][NODE_TEXT], {CLASSIFICATION:triplet[2][CLASSIFICATION]})]
             link = (triplet[0][NODE_TEXT], triplet[2][NODE_TEXT], {LINK_LABEL:triplet[1][NODE_TEXT]})
+            log.debug(f"{nodes=}, {link=}")
             G.add_nodes_from(nodes)
             G.add_edges_from([link])
 
@@ -656,33 +666,54 @@ class TextProcessor:
         for index, row in text_df.iterrows():
             if row[C.COL_TYPE] == C.NER:
                 ner_list.append(row[C.COL_ITEM])
+        
+        log.debug(f"{ner_list=}")
 
         for index, row in text_df.iterrows():            
             if row[C.COL_TYPE] == C.NER:
                 ner_item = row[C.COL_ITEM]
                 node_list = self.get_node(G, ner_item)
+                log.debug(f"{node_list=}")
                 for node_label in node_list:
-                    node = (ner_item, {CLASSIFICATION:ENTITY, TYPE: row[C.COL_NER_TYPE] })
+                    # node = (ner_item, {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
+                    node = ("|"+ner_item+"|", {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
                     G.add_nodes_from([node])
                     self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
+                    log.debug(f"{node_label=}, {ner_item=}")
+                    
+                    # if node_label != ner_item :
+                    #     link = (node_label, ner_item, {SOURCE:C.NER})
+                    #     # link = (node_label, "|"+ner_item+"|", {SOURCE:C.NER})
+                    #     G.add_edges_from([link])
 
-                    if node_label != ner_item :
-                        link = (node_label, ner_item, {TYPE:C.NER})
-                        G.add_edges_from([link])
+                    # link = (node_label, ner_item, {SOURCE:C.NER})
+                    link = (node_label, "|"+ner_item+"|", {SOURCE:C.NER})
+                    G.add_edges_from([link])
 
-            if row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in [C.POS_PROPER_NOUN, C.POS_NOUN] and row[C.COL_ITEM] not in ner_list:
+            
+
+            if row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in [C.POS_PROPER_NOUN, C.POS_NOUN]:
                 noun_item = row[C.COL_ITEM]
-                node_list = self.get_node(G, noun_item)
-                for node_label in node_list:
-                    node = (noun_item, {CLASSIFICATION:ENTITY, TYPE:NOUN}) # If same as original node entity, it will just add attribute
-                    G.add_nodes_from([node])
-                    self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
+                log.debug(f"{not self.is_within(noun_item, ner_list)=} for {noun_item=}")
+                if not self.is_within(noun_item, ner_list):
+                    node_list = self.get_node(G, noun_item)
+                    log.debug(f"{node_list=}, {noun_item=}")
+                    for node_label in node_list:
+                        node = (noun_item, {CLASSIFICATION:ENTITY, SOURCE:NOUN}) # If same as original node entity, it will just add attribute
+                        G.add_nodes_from([node])
+                        # self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
-                    if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
-                        self.add_meta_nodes(G, row, ["conceptNetType"])
+                        if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
+                            # self.add_meta_nodes(G, row, ["conceptNetType"])
+                            ...
 
-                    if node_label != noun_item :
-                        link = (node_label, noun_item, {TYPE:NOUN})
+                        # if node_label != noun_item :
+                        #     # link = (node_label, noun_item, {SOURCE:NOUN})
+                        #     link = (node_label, "|"+noun_item+"|", {SOURCE:NOUN})
+                        #     G.add_edges_from([link])
+
+                        # link = (node_label, noun_item, {SOURCE:NOUN})
+                        link = (node_label, "|"+noun_item+"|", {SOURCE:NOUN})
                         G.add_edges_from([link])
 
         return G
