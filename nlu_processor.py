@@ -649,11 +649,17 @@ class TextProcessor:
         return node_list
 
     def is_within(self, text, lst):
-        found = 0
+        found = False
         for item in lst:
             if text in item:
-                found = 1
+                found = True
         return found
+    
+    def surround_it(self, text):
+        return f"|{text}|"
+    
+    def liberate_it(self, text):
+        return text[1:-1]
 
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
@@ -683,15 +689,8 @@ class TextProcessor:
                     self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
                     log.debug(f"{node_label=}, {ner_item=}")
                     
-                    # if node_label != ner_item :
-                    #     link = (node_label, ner_item, {SOURCE:C.NER})
-                    #     # link = (node_label, "|"+ner_item+"|", {SOURCE:C.NER})
-                    #     G.add_edges_from([link])
-
-                    # link = (node_label, ner_item, {SOURCE:C.NER})
                     link = (node_label, "|"+ner_item+"|", {SOURCE:C.NER})
                     G.add_edges_from([link])
-
             
 
             if row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in [C.POS_PROPER_NOUN, C.POS_NOUN]:
@@ -701,19 +700,13 @@ class TextProcessor:
                     node_list = self.get_node(G, noun_item)
                     log.debug(f"{node_list=}, {noun_item=}")
                     for node_label in node_list:
-                        node = ("|"+noun_item+"|", {CLASSIFICATION:ENTITY, SOURCE:NOUN}) # If same as original node entity, it will just add attribute
+                        node = ("|"+noun_item+"|", {CLASSIFICATION:ENTITY, SOURCE:NOUN})
                         G.add_nodes_from([node])
                         self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
                         if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
                             self.add_meta_nodes(G, row, ["conceptNetType"])
 
-                        # if node_label != noun_item :
-                        #     # link = (node_label, noun_item, {SOURCE:NOUN})
-                        #     link = (node_label, "|"+noun_item+"|", {SOURCE:NOUN})
-                        #     G.add_edges_from([link])
-
-                        # link = (node_label, noun_item, {SOURCE:NOUN})
                         link = (node_label, "|"+noun_item+"|", {SOURCE:NOUN})
                         G.add_edges_from([link])
 
