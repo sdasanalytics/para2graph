@@ -19,6 +19,7 @@ from datetime import datetime
 import ast
 import external_kbs
 import py2neo as p2n
+from tqdm import tqdm
 
 log.remove() #removes default handlers
 log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
@@ -129,6 +130,7 @@ class TextProcessor:
                     G.add_nodes_from([tail])
                     link = (head,label,{SOURCE:source})
                     G.add_edges_from([link])
+                    log.debug(f"{head=}, {link=}, {tail=}")
 
     def save_graph(self, mode="append"):
         G_p2n = p2n.Graph(C.NEO4J_URI, auth=(C.NEO4J_USER, C.NEO4J_PASSWORD))
@@ -140,7 +142,7 @@ class TextProcessor:
         
         nx.write_gexf(self.G, C.GEXF_PATH)
 
-        for node in self.G.nodes(data=True):
+        for node in tqdm(self.G.nodes(data=True), desc="Writing nodes to database:"):
             log.debug(f"{node=}")
             n4j_node_label = node[1].get(SOURCE, PHRASE)
             n4j_node_name = node[0]
@@ -149,7 +151,7 @@ class TextProcessor:
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
 
-        for edge in self.G.edges(data=True):
+        for edge in tqdm(self.G.edges(data=True), desc="Writing edges to database:"):
             log.debug(f"{edge=}")
             head_name = edge[0]
             head_n4j_node_label = self.G.nodes[head_name].get(SOURCE, PHRASE)
@@ -167,7 +169,8 @@ class TextProcessor:
             attrs = {SOURCE:n4j_rel_type}
             log.debug(f"{head_n4j_node=}, {tail_n4j_node=}, {attrs=}")
             link = rel(head_n4j_node, tail_n4j_node, **attrs)
-            G_p2n.create(link)         
+            G_p2n.create(link)
+
 
     def algo1_execute(self, text):
         log.debug(f"Processing text: {text}")
@@ -450,7 +453,6 @@ class TextProcessor:
         doc = self.nlp(text)
         for sentence in doc.sents:
             log.debug(f"Executing {sentence=}")
-            print(f"Executing {sentence=}")
             sentence_uuid = str(uuid.uuid4())
             phrase_triplets, dict_triplets = self.algo3_sentencer(sentence)
             log.debug(f"Executing {phrase_triplets=}, {dict_triplets=}")
@@ -699,13 +701,12 @@ class TextProcessor:
                     node_list = self.get_node(G, noun_item)
                     log.debug(f"{node_list=}, {noun_item=}")
                     for node_label in node_list:
-                        node = (noun_item, {CLASSIFICATION:ENTITY, SOURCE:NOUN}) # If same as original node entity, it will just add attribute
+                        node = ("|"+noun_item+"|", {CLASSIFICATION:ENTITY, SOURCE:NOUN}) # If same as original node entity, it will just add attribute
                         G.add_nodes_from([node])
-                        # self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
+                        self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
                         if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
-                            # self.add_meta_nodes(G, row, ["conceptNetType"])
-                            ...
+                            self.add_meta_nodes(G, row, ["conceptNetType"])
 
                         # if node_label != noun_item :
                         #     # link = (node_label, noun_item, {SOURCE:NOUN})
@@ -743,7 +744,7 @@ def main():
         with open(sys.argv[3]) as fp: 
             processor = tp.get_processor(sys.argv[1])
             lines = fp.readlines() 
-            for line in lines:
+            for line in tqdm(lines, desc="Processing sentences"):
                 log.info(f"Processing line: {line}")
                 processor(line.strip())
             tp.save_graph(mode="overwrite")
