@@ -20,26 +20,14 @@ import ast
 import external_kbs
 import py2neo as p2n
 from tqdm import tqdm
+from functools import partialmethod
 
 log.remove() #removes default handlers
-log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
+log.level("D_DEBUG", no=33, icon="🤖", color="<blue>")
+log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="D_DEBUG")
+log.__class__.d_debug = partialmethod(log.__class__.log, "D_DEBUG")
 
-ROOT = "ROOT"
-SUBJECT = "SUBJECT"
 PREDICATE = "PREDICATE"
-OBJECT = "OBJECT"
-COMPOUND = "COMPOUND"
-MODIFIER = "MODIFIER"
-SUBJECTS = ["nsubj", "nsubjpass", "csubj", "csubjpass", "agent", "expl"]
-OBJECTS = ["dobj", "pobj", "dative", "oprd", "attr"] #attr - is an interesting one as Object, removing this makes attr as PREDICATE
-COMPOUNDS = ["compound"]
-MODIFIERS = ["amod", "advmod", "nummod", "npadvmod"]
-EXCLUSIONS = ["det", "punct"]
-# ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm",
-#               "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"]
-# PREPOSITIONS = ["prep"]
-# "attr" removed from OBJECTS list. It is further qualifying a predicate or verb
-
 ENTITY = "Entity"
 ENTITYTYPE = "EntityType"
 LINK = "Link"
@@ -125,12 +113,12 @@ class TextProcessor:
             label_list = ast.literal_eval(row[f"list_{source}"])
             for label in label_list[:3]:
                 if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'wd_UNKNOWN']:
-                    head = "|"+row[C.COL_ITEM]+"|"
+                    head = self.surround_it(row[C.COL_ITEM])
                     tail = (label, {CLASSIFICATION:ENTITYTYPE, SOURCE:source})
                     G.add_nodes_from([tail])
-                    link = (head,label,{SOURCE:source})
+                    link = (head,label,{LINK_LABEL:source, SOURCE:source})
                     G.add_edges_from([link])
-                    log.debug(f"{head=}, {link=}, {tail=}")
+                    log.d_debug(f"{head=}, {link=}, {tail=}")
 
     def save_graph(self, mode="append"):
         G_p2n = p2n.Graph(C.NEO4J_URI, auth=(C.NEO4J_USER, C.NEO4J_PASSWORD))
@@ -143,22 +131,26 @@ class TextProcessor:
         nx.write_gexf(self.G, C.GEXF_PATH)
 
         for node in tqdm(self.G.nodes(data=True), desc="Writing nodes to database:"):
-            log.debug(f"{node=}")
+            log.d_debug(f"{node=}")
             n4j_node_label = node[1].get(SOURCE, PHRASE)
-            n4j_node_name = node[0]
+            n4j_node_name = self.liberate_it(node[0])
             attrs = {N4J_NODE_NAME:n4j_node_name, CLASSIFICATION:node[1].get(CLASSIFICATION,"-")}
-            log.debug(f"{n4j_node_label=}, {attrs=}")
+            log.d_debug(f"{n4j_node_label=}, {attrs=}")
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
 
         for edge in tqdm(self.G.edges(data=True), desc="Writing edges to database:"):
-            log.debug(f"{edge=}")
+            log.d_debug(f"{edge=}")
             head_name = edge[0]
+            log.d_debug(f"{edge[0]=}, {head_name=}")
             head_n4j_node_label = self.G.nodes[head_name].get(SOURCE, PHRASE)
+            head_name = self.liberate_it(head_name)
+            log.d_debug(f"{head_n4j_node_label=}, {head_name=}")
             head_n4j_node = G_p2n.nodes.match(head_n4j_node_label, name=head_name).first()
 
             tail_name = edge[1]
             tail_n4j_node_label = self.G.nodes[tail_name].get(SOURCE, PHRASE)
+            tail_name = self.liberate_it(tail_name)
             tail_n4j_node = G_p2n.nodes.match(tail_n4j_node_label, name=tail_name).first()
             
             n4j_rel_name = edge[2].get(LINK_LABEL,"-")
@@ -167,31 +159,9 @@ class TextProcessor:
             rel = p2n.Relationship.type(n4j_rel_name)
             n4j_rel_type = edge[2].get(SOURCE,PREDICATE)
             attrs = {SOURCE:n4j_rel_type}
-            log.debug(f"{head_n4j_node=}, {tail_n4j_node=}, {attrs=}")
+            log.d_debug(f"{head_n4j_node=}, {tail_n4j_node=}, {n4j_rel_name=}, {attrs=}")
             link = rel(head_n4j_node, tail_n4j_node, **attrs)
             G_p2n.create(link)
-
-
-    def algo1_execute(self, text):
-        log.debug(f"Processing text: {text}")
-        doc = self.nlp(text)
-        for sentence in doc.sents:
-            sentence_uuid = str(uuid.uuid4())
-            spacy_data, text_df = self.algo1_process_sentence(sentence_uuid, sentence)
-            self.algo1_create_graph(self.G, spacy_data, text_df)
-        nx.write_gexf(self.G, C.GEXF_PATH)
-        
-        # for node in self.G.nodes(data=True):
-        #     log.debug(node)
-        # plot_graph(self.G)
-        
-        return
-
-    def algo1_process_sentence(self, sentence_uuid, sentence):
-        # Add subject, predicate, object & C.NER to the dataframe - as 1st row for the para/sentence
-        spo_data = self.algo1_spacy_data(sentence)
-        text_df = self.process_save_ners_tokens(sentence_uuid, sentence, spo_data)
-        return spo_data, text_df
 
     def process_tokens(self, sentence_uuid, sentence, text_df):
         # Add tokens to the dataframe - 1 row per token as the 2nd row onwards for the para/sentence
@@ -239,100 +209,6 @@ class TextProcessor:
             text_df = text_df.append(row, ignore_index=True)
         return text_df
 
-    def algo1_create_graph(self, G, spacy_data, text_df):
-        ...
-        '''
-        Driving loops are as follows; each one checks if it was processed in the earlier loop or not
-        NERs
-        Compound Nouns ?
-        Proper Nouns
-        Verb Phrases
-        Nouns
-        Pronouns or Dets?
-        SUBJECT
-        OBJECT
-        PREDICATE - AS LINKS
-        '''
-        for index, row in text_df.iterrows():
-            
-            if row[C.COL_TYPE] == C.NER:
-                attrs = {CLASSIFICATION:ENTITY, SOURCE:row[C.COL_NER_TYPE]}
-                G.add_node(row[C.COL_ITEM], **attrs)
-                
-                self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
-
-            if str(row[C.COL_COMP_NOUN]) != 'nan':
-                pass # This is a ToDo ... Decide whether compound nouns need to be handled & whether this is the right place for this code
-
-            if (row[C.COL_TYPE] == C.COL_TYPE_VAL_TOKEN and row[C.COL_TOKEN_POS] in ["PROPN","NOUN"] and (row[C.COL_ITEM] not in spacy_data["C.NER"])):
-                attrs = {CLASSIFICATION:ENTITY}
-                G.add_node(row[C.COL_ITEM], **attrs)
-                
-                self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
-
-                if (row[C.COL_TOKEN_POS] == "NOUN") and str(row[C.COL_CONCEPTNET]) != 'nan':
-                    self.add_meta_nodes(G, row, ["conceptNetType"])
-                
-            if(row[C.COL_TOKEN_POS] == "PRON"):
-                attrs = {CLASSIFICATION:ENTITY, SOURCE:"EntityPointer"}
-                G.add_node(row[C.COL_ITEM], **attrs)
-
-            if str(row[C.COL_VERB_PHRASE]) != 'nan':
-                attrs = {CLASSIFICATION:ACTIVITY}
-                G.add_node(row[C.COL_VERB_PHRASE], **attrs)
-    
-    # My own function invented to create the best chunks out of the sentences
-    def algo1_spacy_data(self, doc):
-        subject = []
-        subject_words = []
-        predicate = []
-        object_ = []
-        
-        log.debug("|chunk.text|chunk.root|chunk.root.dep_|")
-        for chunk in doc.noun_chunks:
-            log.debug(f"|{chunk.text:30}|{chunk.root.text:12}|{chunk.root.dep_:10}|")
-            # log.debug(dir(chunk))
-            if 'subj' in chunk.root.dep_:
-                subject.append(chunk.text)
-                subject_words = chunk.text.split()
-            elif 'obj' in chunk.root.dep_:
-                if 'dobj' in chunk.root.dep_:
-                    object_.append(f"{chunk.text} {chunk.root.text}")
-                else:
-                    object_.append(chunk.text)
-            else:
-                predicate.append(chunk.text)
-        
-        log.debug(f"Post noun chunks... subject:{subject}; subject_words:{subject_words}; predicate:{predicate}; object_:{object_}")
-
-        for token in doc:
-            if 'ROOT' == token.dep_ and token.pos_ != 'AUX':
-                predicate.append(token.text)
-                log.debug(f"Root predicate: {predicate}")
-                for child in token.children:
-                    log.debug(f"Processing child: {child.text}; subject: {subject}; predicate{predicate}")
-                    if child.text not in subject_words and child.text not in predicate and child.pos_ not in ['ADP', 'AUX', 'PUNCT']:
-                        predicate.append(child.text)
-                        log.debug(f"predicate after child: {predicate}")
-            elif token.dep_ in ['advcl', 'advmod', 'oprd', 'xcomp'] and (token.text not in subject_words and token.text not in predicate):
-                predicate.append(token.text)
-                log.debug(f"Non-root predicate: {predicate}")
-
-        ner_dict = {}
-        for ent in doc.ents:
-            ner_dict[ent.text] = ent.label_
-
-        spacy_data = {
-                SUBJECT:subject,
-                PREDICATE:predicate,
-                OBJECT:object_
-                ,
-                C.NER: ner_dict
-                }
-        
-        log.debug(spacy_data)
-        return spacy_data
-    
     def breakit(self, item):
         key = ""
         value = ""
@@ -340,113 +216,6 @@ class TextProcessor:
             key = x
             value = y
         return key, value
-
-    def algo2_get_keytype(self, dep):
-        key = ""
-        if dep == ROOT:
-            key = ROOT
-        elif dep in SUBJECTS:
-            key = SUBJECT
-        elif dep in OBJECTS:
-            key = OBJECT
-        elif dep in COMPOUNDS:
-            key = COMPOUND
-        elif dep in MODIFIERS:
-            key = MODIFIER
-        else:
-            key = PREDICATE
-        return key
-
-    def algo2_execute(self, text):
-        log.debug(f"Processing text: {text}")
-        doc = self.nlp(text)
-        for sentence in doc.sents:
-            log.debug(f"sentence=")
-            sentence_uuid = str(uuid.uuid4())
-            spo_data, subject_data = self.algo2_process_sentence(sentence_uuid, sentence)
-            sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
-            params = (sentence_uuid, )
-            vw_text_df = pd.read_sql(sql_str, self.db, params=params)
-
-    def algo2_process_sentence(self, sentence_uuid, sentence):
-        # Add subject, predicate, object & C.NER to the dataframe - as 1st row for the para/sentence
-        context, spo_data, subject_data = self.algo2_spo_data(sentence)
-        text_df = self.process_save_ners_tokens(sentence_uuid, sentence, [context, spo_data, subject_data])
-        return spo_data, subject_data
-
-    def algo2_spo_data(self, sentence):
-        context=[{"ROOT":"x"}]
-        for token in sentence:
-            if (token.dep_ == "ROOT"):
-                log.debug(f"{token.text} is the root")
-                context = self.algo2_sentence_dfs(token,context=[{"ROOT":token.text}])
-        log.debug(f"Final context: {context}")
-        # log.debug(f"{context[0]=}")
-        
-        key0, value0 = self.breakit(context[0])
-        key2, value2 = self.breakit(context[2])
-        context_y = [context[1]]
-        if key2 == PREDICATE:
-            value2 = f"{value0} {value2}"
-            context_y.append({PREDICATE:value2})
-            context_y.extend(i for i in context[3:])
-        else:
-            context_y.append({PREDICATE:value0})
-            context_y.extend(i for i in context[2:])
-        log.debug(context_y)
-        
-        subject_q = []
-        spo_list = []
-        for item in context_y:
-            key, value = self.breakit(item)
-            if key == SUBJECT:
-                subject_q.append(value)
-                spo_list.append([value])
-            elif key == PREDICATE:
-                spo_list[-1].append(value)
-            elif key == OBJECT:
-                spo_list[-1].append(value)
-                spo_list.append([subject_q[-1]])
-
-        log.debug(f"{spo_list[:-1]=}")
-        log.debug(f"{subject_q=}")
-        return context, spo_list[:-1], subject_q
-
-    def algo2_sentence_dfs(self, token, context):
-        item = {}
-        key = self.algo2_get_keytype(token.dep_)
-        for x,y in context[-1].items():
-            last_key = x
-            last_value = y
-        log.debug(f"{key=}, {token.text=}, {context=}, {last_key=}:{last_value=}")
-        if key == ROOT:
-            log.debug("Skipping as key is ROOT...")
-        elif last_key != key:
-            if (key == COMPOUND): 
-                value = f"{token.text} {last_value}"
-                log.debug(f"COMPOUND : {last_key}:{value}")
-                context[-1] = {last_key:value}
-            elif (key == MODIFIER and token in token.head.lefts):
-                value = f"{token.text} {last_value}"
-                log.debug(f"MODIFIER : {last_key}:{value}")
-                context[-1] = {last_key:value}
-            else:
-                if key == MODIFIER:
-                    key = PREDICATE
-                item[key] = token.text
-                log.debug(f"context.append({item=})")
-                context.append(item)
-        else: # if last_key == key
-            value = f"{last_value} {token.text}"
-            log.debug(f"if last_key == key: {key=}:{value=}")
-            context[-1] = {key:value}
-        log.debug(f"context after adding: {context}")
-
-        for child in token.children:
-            log.debug(f"exploring child {child.text}")
-            if(child.dep_ not in EXCLUSIONS):
-                self.algo2_sentence_dfs(child,context)
-        return context
 
     def algo3_execute(self, text):
         log.debug(f"Processing text: {text}")
@@ -506,7 +275,7 @@ class TextProcessor:
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                     dict_triplet = [{NODE_TEXT: last_subject, CLASSIFICATION:ENTITY} ,
-                            {NODE_TEXT: link_phrase, SOURCE: LINK},
+                            {NODE_TEXT: link_phrase, CLASSIFICATION: LINK},
                             {NODE_TEXT: current_phrase.lstrip(), CLASSIFICATION:ENTITY}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
@@ -659,14 +428,17 @@ class TextProcessor:
         return f"|{text}|"
     
     def liberate_it(self, text):
-        return text[1:-1]
+        if "|" in text:
+            return text[1:-1]
+        else:
+            return text
 
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
             nodes = [(triplet[0][NODE_TEXT], {CLASSIFICATION:triplet[0][CLASSIFICATION]}),(triplet[2][NODE_TEXT], {CLASSIFICATION:triplet[2][CLASSIFICATION]})]
-            link = (triplet[0][NODE_TEXT], triplet[2][NODE_TEXT], {LINK_LABEL:triplet[1][NODE_TEXT]})
-            log.debug(f"{nodes=}, {link=}")
+            link = (triplet[0][NODE_TEXT], triplet[2][NODE_TEXT], {LINK_LABEL:triplet[1][NODE_TEXT], SOURCE:PHRASE})
+            log.d_debug(f"{nodes=}, {link=}")
             G.add_nodes_from(nodes)
             G.add_edges_from([link])
 
@@ -683,13 +455,13 @@ class TextProcessor:
                 node_list = self.get_node(G, ner_item)
                 log.debug(f"{node_list=}")
                 for node_label in node_list:
-                    # node = (ner_item, {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
-                    node = ("|"+ner_item+"|", {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
+                    node = (self.surround_it(ner_item), {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
+                    log.d_debug(f"{node_label=}, {ner_item=}")
                     G.add_nodes_from([node])
                     self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
-                    log.debug(f"{node_label=}, {ner_item=}")
-                    
-                    link = (node_label, "|"+ner_item+"|", {SOURCE:C.NER})
+
+                    link = (node_label, self.surround_it(ner_item), {LINK_LABEL:C.NER, SOURCE:C.NER})
+                    log.d_debug(f"{link=}")
                     G.add_edges_from([link])
             
 
@@ -700,14 +472,16 @@ class TextProcessor:
                     node_list = self.get_node(G, noun_item)
                     log.debug(f"{node_list=}, {noun_item=}")
                     for node_label in node_list:
-                        node = ("|"+noun_item+"|", {CLASSIFICATION:ENTITY, SOURCE:NOUN})
+                        node = (self.surround_it(noun_item), {CLASSIFICATION:ENTITY, SOURCE:NOUN})
+                        log.d_debug(f"{node=}")
                         G.add_nodes_from([node])
                         self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
 
                         if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
                             self.add_meta_nodes(G, row, ["conceptNetType"])
 
-                        link = (node_label, "|"+noun_item+"|", {SOURCE:NOUN})
+                        link = (node_label, self.surround_it(noun_item), {LINK_LABEL:NOUN, SOURCE:NOUN})
+                        log.d_debug(f"{link=}")
                         G.add_edges_from([link])
 
         return G
