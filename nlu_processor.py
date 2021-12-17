@@ -27,20 +27,6 @@ log.level("D_DEBUG", no=33, icon="🤖", color="<blue>")
 log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="D_DEBUG")
 log.__class__.d_debug = partialmethod(log.__class__.log, "D_DEBUG")
 
-PREDICATE = "PREDICATE"
-ENTITY = "Entity"
-ENTITYTYPE = "EntityType"
-LINK = "Link"
-ATTRIBUTE = "Attribute"
-ACTIVITY = "Activity"
-NODE_TEXT = "Node_Text"
-LINK_LABEL = "Link_Label"
-CLASSIFICATION = "classification"
-SOURCE = "source"
-NOUN = "Noun"
-PHRASE = "Phrase"
-N4J_NODE_NAME = "name"
-
 def plot_graph(G, title=None):
     # set figure size
     plt.figure(figsize=(10,10))
@@ -112,11 +98,11 @@ class TextProcessor:
         for source in sources:
             label_list = ast.literal_eval(row[f"list_{source}"])
             for label in label_list[:3]:
-                if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'wd_UNKNOWN']:
+                if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'MediaWiki help page','Wikimedia non-main namespace','wd_UNKNOWN']:
                     head = self.surround_it(row[C.COL_ITEM])
-                    tail = (label, {CLASSIFICATION:ENTITYTYPE, SOURCE:source})
+                    tail = (label, {C.CLASSIFICATION:C.ENTITYTYPE, C.SOURCE:source})
                     G.add_nodes_from([tail])
-                    link = (head,label,{LINK_LABEL:source, SOURCE:source})
+                    link = (head,label,{C.LINK_LABEL:source, C.SOURCE:source})
                     G.add_edges_from([link])
                     log.d_debug(f"{head=}, {link=}, {tail=}")
 
@@ -132,9 +118,9 @@ class TextProcessor:
 
         for node in tqdm(self.G.nodes(data=True), desc="Writing nodes to database:"):
             log.d_debug(f"{node=}")
-            n4j_node_label = node[1].get(SOURCE, PHRASE)
+            n4j_node_label = node[1].get(C.SOURCE, C.PHRASE)
             n4j_node_name = self.liberate_it(node[0])
-            attrs = {N4J_NODE_NAME:n4j_node_name, CLASSIFICATION:node[1].get(CLASSIFICATION,"-")}
+            attrs = {C.N4J_NODE_NAME:n4j_node_name, C.CLASSIFICATION:node[1].get(C.CLASSIFICATION,"-")}
             log.d_debug(f"{n4j_node_label=}, {attrs=}")
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
@@ -143,22 +129,22 @@ class TextProcessor:
             log.d_debug(f"{edge=}")
             head_name = edge[0]
             log.d_debug(f"{edge[0]=}, {head_name=}")
-            head_n4j_node_label = self.G.nodes[head_name].get(SOURCE, PHRASE)
+            head_n4j_node_label = self.G.nodes[head_name].get(C.SOURCE, C.PHRASE)
             head_name = self.liberate_it(head_name)
             log.d_debug(f"{head_n4j_node_label=}, {head_name=}")
             head_n4j_node = G_p2n.nodes.match(head_n4j_node_label, name=head_name).first()
 
             tail_name = edge[1]
-            tail_n4j_node_label = self.G.nodes[tail_name].get(SOURCE, PHRASE)
+            tail_n4j_node_label = self.G.nodes[tail_name].get(C.SOURCE, C.PHRASE)
             tail_name = self.liberate_it(tail_name)
             tail_n4j_node = G_p2n.nodes.match(tail_n4j_node_label, name=tail_name).first()
             
-            n4j_rel_name = edge[2].get(LINK_LABEL,"-")
+            n4j_rel_name = edge[2].get(C.LINK_LABEL,"-")
             if n4j_rel_name == '':
                 n4j_rel_name = "-"
             rel = p2n.Relationship.type(n4j_rel_name)
-            n4j_rel_type = edge[2].get(SOURCE,PREDICATE)
-            attrs = {SOURCE:n4j_rel_type}
+            n4j_rel_type = edge[2].get(C.SOURCE,C.PREDICATE)
+            attrs = {C.SOURCE:n4j_rel_type}
             log.d_debug(f"{head_n4j_node=}, {tail_n4j_node=}, {n4j_rel_name=}, {attrs=}")
             link = rel(head_n4j_node, tail_n4j_node, **attrs)
             G_p2n.create(link)
@@ -274,9 +260,9 @@ class TextProcessor:
                 
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    dict_triplet = [{NODE_TEXT: last_subject, CLASSIFICATION:ENTITY} ,
-                            {NODE_TEXT: link_phrase, CLASSIFICATION: LINK},
-                            {NODE_TEXT: current_phrase.lstrip(), CLASSIFICATION:ENTITY}]
+                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.ENTITY} ,
+                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK},
+                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.ENTITY}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
                     dict_triplets.append(dict_triplet)
@@ -317,7 +303,7 @@ class TextProcessor:
 
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                dict_triplet = [{NODE_TEXT:subject_phrase, CLASSIFICATION:ENTITY}, {NODE_TEXT: link_phrase, SOURCE: LINK}, {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}]
+                dict_triplet = [{C.NODE_TEXT:subject_phrase, C.CLASSIFICATION:C.ENTITY}, {C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}]
                 log.debug(f"8. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -329,10 +315,10 @@ class TextProcessor:
                 phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                 right = {}
                 if len(object_phrase) > 0:
-                    right = {NODE_TEXT:object_phrase, CLASSIFICATION:ENTITY}
+                    right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.ENTITY}
                 if len(activity_phrase):
-                    right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
-                dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, SOURCE: LINK}, right]
+                    right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
+                dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, right]
                 log.debug(f"9. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -344,14 +330,14 @@ class TextProcessor:
             phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
             right = {}
             if len(attribute_phrase) > 0:
-                right = {NODE_TEXT:attribute_phrase, CLASSIFICATION:ATTRIBUTE}
+                right = {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
             if len(object_phrase)>0:
-                right = {NODE_TEXT:object_phrase, CLASSIFICATION:ENTITY}
+                right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.ENTITY}
             if len(activity_phrase)>0:
-                right = {NODE_TEXT:activity_phrase, CLASSIFICATION:ACTIVITY}
+                right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
             if len(current_phrase) > 0:
-                right = {NODE_TEXT:current_phrase, CLASSIFICATION:ATTRIBUTE}
-            dict_triplet = [{NODE_TEXT:source_link, CLASSIFICATION:ENTITY},{NODE_TEXT: link_phrase, SOURCE: LINK}, right]
+                right = {C.NODE_TEXT:current_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
+            dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, right]
             log.debug(f"11. {dict_triplet=}")
             phrase_triplets.append(phrase_triplet)
             dict_triplets.append(dict_triplet)            
@@ -436,8 +422,8 @@ class TextProcessor:
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
-            nodes = [(triplet[0][NODE_TEXT], {CLASSIFICATION:triplet[0][CLASSIFICATION]}),(triplet[2][NODE_TEXT], {CLASSIFICATION:triplet[2][CLASSIFICATION]})]
-            link = (triplet[0][NODE_TEXT], triplet[2][NODE_TEXT], {LINK_LABEL:triplet[1][NODE_TEXT], SOURCE:PHRASE})
+            nodes = [(triplet[0][C.NODE_TEXT], {C.CLASSIFICATION:triplet[0][C.CLASSIFICATION]}),(triplet[2][C.NODE_TEXT], {C.CLASSIFICATION:triplet[2][C.CLASSIFICATION]})]
+            link = (triplet[0][C.NODE_TEXT], triplet[2][C.NODE_TEXT], {C.LINK_LABEL:triplet[1][C.NODE_TEXT], C.SOURCE:C.PHRASE})
             log.d_debug(f"{nodes=}, {link=}")
             G.add_nodes_from(nodes)
             G.add_edges_from([link])
@@ -455,12 +441,12 @@ class TextProcessor:
                 node_list = self.get_node(G, ner_item)
                 log.debug(f"{node_list=}")
                 for node_label in node_list:
-                    node = (self.surround_it(ner_item), {CLASSIFICATION:ENTITY, SOURCE: row[C.COL_NER_TYPE] })
+                    node = (self.surround_it(ner_item), {C.CLASSIFICATION:C.ENTITY, C.SOURCE: row[C.COL_NER_TYPE] })
                     log.d_debug(f"{node_label=}, {ner_item=}")
                     G.add_nodes_from([node])
-                    self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
+                    self.add_meta_nodes(G, row, [C.WD_INSTANCE,C.WIKIDATA_CLASS,C.DBPEDIA_TYPE])
 
-                    link = (node_label, self.surround_it(ner_item), {LINK_LABEL:C.NER, SOURCE:C.NER})
+                    link = (node_label, self.surround_it(ner_item), {C.LINK_LABEL:C.NER, C.SOURCE:C.NER})
                     log.d_debug(f"{link=}")
                     G.add_edges_from([link])
             
@@ -472,15 +458,15 @@ class TextProcessor:
                     node_list = self.get_node(G, noun_item)
                     log.debug(f"{node_list=}, {noun_item=}")
                     for node_label in node_list:
-                        node = (self.surround_it(noun_item), {CLASSIFICATION:ENTITY, SOURCE:NOUN})
+                        node = (self.surround_it(noun_item), {C.CLASSIFICATION:C.ENTITY, C.SOURCE:C.NOUN})
                         log.d_debug(f"{node=}")
                         G.add_nodes_from([node])
-                        self.add_meta_nodes(G, row, ["wdInstance","wikiDataClass","dbPediaType"])
+                        self.add_meta_nodes(G, row, [C.WD_INSTANCE,C.WIKIDATA_CLASS,C.DBPEDIA_TYPE])
 
                         if (row[C.COL_TOKEN_POS] == C.POS_NOUN) and str(row[C.COL_CONCEPTNET]) != "None":
-                            self.add_meta_nodes(G, row, ["conceptNetType"])
+                            self.add_meta_nodes(G, row, [C.CONCEPTNET_TYPE])
 
-                        link = (node_label, self.surround_it(noun_item), {LINK_LABEL:NOUN, SOURCE:NOUN})
+                        link = (node_label, self.surround_it(noun_item), {C.LINK_LABEL:C.NOUN, C.SOURCE:C.NOUN})
                         log.d_debug(f"{link=}")
                         G.add_edges_from([link])
 
