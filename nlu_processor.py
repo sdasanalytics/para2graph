@@ -98,7 +98,7 @@ class TextProcessor:
         for source in sources:
             label_list = ast.literal_eval(row[f"list_{source}"])
             for label in label_list[:3]:
-                if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'MediaWiki help page','Wikimedia non-main namespace','wd_UNKNOWN']:
+                if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'class', 'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'MediaWiki help page','Wikimedia non-main namespace','wd_UNKNOWN']:
                     head = self.surround_it(row[C.COL_ITEM])
                     tail = (label, {C.CLASSIFICATION:C.ENTITYTYPE, C.SOURCE:source})
                     G.add_nodes_from([tail])
@@ -118,9 +118,9 @@ class TextProcessor:
 
         for node in tqdm(self.G.nodes(data=True), desc="Writing nodes to database:"):
             log.d_debug(f"{node=}")
-            n4j_node_label = node[1].get(C.SOURCE, C.PHRASE)
+            n4j_node_label = node[1][C.SOURCE]
             n4j_node_name = self.liberate_it(node[0])
-            attrs = {C.N4J_NODE_NAME:n4j_node_name, C.CLASSIFICATION:node[1].get(C.CLASSIFICATION,"-")}
+            attrs = {C.N4J_NODE_NAME:n4j_node_name, C.CLASSIFICATION:node[1][C.CLASSIFICATION]}
             log.d_debug(f"{n4j_node_label=}, {attrs=}")
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
@@ -232,7 +232,8 @@ class TextProcessor:
         DEP_ACTIVITIES = ["dobj"]
         DEP_MODIFIERS = ["compound", "npadvmod"]
         ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm", "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"] # might need to add this to DEP_X_NOUNS
-        DEP_X_NOUNS = DEP_OBJECTS + DEP_ATTRIBUTES + DEP_ACTIVITIES + DEP_MODIFIERS
+        # DEP_X_NOUNS = DEP_OBJECTS + DEP_ATTRIBUTES + DEP_ACTIVITIES + DEP_MODIFIERS
+        DEP_X_NOUNS = DEP_OBJECTS + DEP_ATTRIBUTES + DEP_ACTIVITIES + DEP_MODIFIERS + DEP_SUBJECTS
 
         def reset_phrases():
             return "","-","","",""
@@ -241,8 +242,9 @@ class TextProcessor:
         phrase_triplets = []
         dict_triplets = []
         current_phrase = ""
-        source_link = ""
+        source_link = []
         last_subject = ""
+        object_list = []
         
         doc = self.algo3_pre_process_sentence(doc)
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
@@ -254,23 +256,24 @@ class TextProcessor:
                 continue
 
             current_phrase = f"{current_phrase} {token.text}"
-            log.debug(f"1. {current_phrase=}")
+            log.debug(f"1. {token.text=}, {current_phrase=}")
 
             if token.dep_ in DEP_SUBJECTS:
                 
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT} ,
-                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK},
-                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT}]
+                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT, C.SOURCE:C.PHRASE} ,
+                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK, C.SOURCE:C.PHRASE},
+                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT, C.SOURCE:C.PHRASE}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
                     dict_triplets.append(dict_triplet)
                     link_phrase = "-"
+                    object_list=[] # Added
 
                 subject_phrase = current_phrase.lstrip()
                 last_subject = subject_phrase
-                source_link = subject_phrase
+                source_link = [subject_phrase, C.SUBJECT]
                 current_phrase = ""
                 log.debug(f"2. {subject_phrase=}")
             
@@ -281,11 +284,13 @@ class TextProcessor:
 
             if token.dep_ in DEP_OBJECTS:
                 object_phrase = current_phrase.lstrip()
+                object_list.append(object_phrase)
                 current_phrase = ""
                 log.debug(f"4.1 {object_phrase=}")
 
             if token.pos_ == C.POS_NOUN and token.dep_ not in DEP_X_NOUNS:
                 object_phrase = current_phrase.lstrip()
+                object_list.append(object_phrase)
                 current_phrase = ""
                 log.debug(f"4.2 {object_phrase=}")                
 
@@ -299,7 +304,7 @@ class TextProcessor:
                 current_phrase = ""
                 log.debug(f"6. {activity_phrase=}")
 
-            log.debug(f"7. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}")
+            log.debug(f"7. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}, {object_list=}")
 
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
@@ -310,26 +315,36 @@ class TextProcessor:
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
                 
-                source_link = attribute_phrase
+                source_link = [attribute_phrase, C.ATTRIBUTE]
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()
 
-            if len(source_link) > 0 and (len(object_phrase) > 0 or len(activity_phrase)) :
-                phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
+            if len(source_link) > 0 and (len(object_phrase) > 0 or len(activity_phrase)>0) :
+                if len(object_list)>1: # Added
+                    source_link = [object_list[-2], C.OBJECT]  # Added               
+                phrase_triplet = [source_link[0], link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                 right = {}
                 if len(object_phrase) > 0:
                     right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.OBJECT}
                 if len(activity_phrase):
                     right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
-                dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
+                dict_triplet = [{C.NODE_TEXT:source_link[0], C.CLASSIFICATION:source_link[1]},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
                 log.debug(f"9. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()        
 
-            log.debug(f"10. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}")
+            log.debug(f"10. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}, {object_list=}")
         
         if len(object_phrase) > 0 or len(attribute_phrase) > 0 or len(activity_phrase) > 0 or len(current_phrase)>0:
-            phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
+            if len(source_link)==0:
+                if subject_phrase != '':
+                    source_link = [subject_phrase, C.SUBJECT]
+                elif len(object_list)>1:
+                    source_link = [object_list[-2], C.OBJECT] 
+                else:
+                    source_link = ["-","-"]
+
+            phrase_triplet = [source_link[0], link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
             right = {}
             if len(attribute_phrase) > 0:
                 right = {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
@@ -339,7 +354,7 @@ class TextProcessor:
                 right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
             if len(current_phrase) > 0:
                 right = {C.NODE_TEXT:current_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
-            dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, right]
+            dict_triplet = [{C.NODE_TEXT:source_link[0], C.CLASSIFICATION:source_link[1]},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
             log.debug(f"11. {dict_triplet=}")
             phrase_triplets.append(phrase_triplet)
             dict_triplets.append(dict_triplet)            
@@ -424,7 +439,7 @@ class TextProcessor:
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
-            nodes = [(triplet[0][C.NODE_TEXT], {C.CLASSIFICATION:triplet[0][C.CLASSIFICATION]}),(triplet[2][C.NODE_TEXT], {C.CLASSIFICATION:triplet[2][C.CLASSIFICATION]})]
+            nodes = [(triplet[0][C.NODE_TEXT], {C.CLASSIFICATION:triplet[0][C.CLASSIFICATION], C.SOURCE:C.PHRASE}),(triplet[2][C.NODE_TEXT], {C.CLASSIFICATION:triplet[2][C.CLASSIFICATION], C.SOURCE:C.PHRASE})]
             link = (triplet[0][C.NODE_TEXT], triplet[2][C.NODE_TEXT], {C.LINK_LABEL:triplet[1][C.NODE_TEXT], C.SOURCE:C.PHRASE})
             log.d_debug(f"{nodes=}, {link=}")
             G.add_nodes_from(nodes)
