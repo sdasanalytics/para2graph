@@ -24,7 +24,7 @@ from functools import partialmethod
 
 log.remove() #removes default handlers
 log.level("D_DEBUG", no=33, icon="🤖", color="<blue>")
-log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="D_DEBUG")
+log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
 log.__class__.d_debug = partialmethod(log.__class__.log, "D_DEBUG")
 
 def plot_graph(G, title=None):
@@ -260,9 +260,9 @@ class TextProcessor:
                 
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.ENTITY} ,
-                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK},
-                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.ENTITY}]
+                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT} ,
+                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK},
+                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
                     dict_triplets.append(dict_triplet)
@@ -303,7 +303,9 @@ class TextProcessor:
 
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                dict_triplet = [{C.NODE_TEXT:subject_phrase, C.CLASSIFICATION:C.ENTITY}, {C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}]
+                dict_triplet = [{C.NODE_TEXT:subject_phrase, C.CLASSIFICATION:C.SUBJECT}, 
+                                {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, 
+                                {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}]
                 log.debug(f"8. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -315,10 +317,10 @@ class TextProcessor:
                 phrase_triplet = [source_link, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                 right = {}
                 if len(object_phrase) > 0:
-                    right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.ENTITY}
+                    right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.OBJECT}
                 if len(activity_phrase):
                     right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
-                dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.SOURCE: C.LINK}, right]
+                dict_triplet = [{C.NODE_TEXT:source_link, C.CLASSIFICATION:C.ENTITY},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
                 log.debug(f"9. {dict_triplet=}")
                 phrase_triplets.append(phrase_triplet)
                 dict_triplets.append(dict_triplet)
@@ -332,7 +334,7 @@ class TextProcessor:
             if len(attribute_phrase) > 0:
                 right = {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
             if len(object_phrase)>0:
-                right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.ENTITY}
+                right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.OBJECT}
             if len(activity_phrase)>0:
                 right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
             if len(current_phrase) > 0:
