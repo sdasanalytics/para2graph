@@ -27,28 +27,6 @@ log.level("D_DEBUG", no=33, icon="🤖", color="<blue>")
 log.add(C.LOG_PATH, backtrace=True, diagnose=True, level="DEBUG")
 log.__class__.d_debug = partialmethod(log.__class__.log, "D_DEBUG")
 
-def plot_graph(G, title=None):
-    # set figure size
-    plt.figure(figsize=(10,10))
-    
-    # define position of nodes in figure
-    pos = nx.nx_agraph.graphviz_layout(G)
-    
-    # draw nodes and edges
-    nx.draw(G, pos=pos, with_labels=True)
-    
-    # get edge labels (if any)
-    edge_labels = nx.get_edge_attributes(G, 'weight')
-    
-    # draw edge labels (if any)
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
-    
-    # plot the title (if any)
-    plt.title(title)
-    
-    plt.show()
-    return
-
 # ----------------------------------------------------
 # Class TextProcessor
 # ----------------------------------------------------
@@ -120,7 +98,7 @@ class TextProcessor:
             log.d_debug(f"{node=}")
             n4j_node_label = node[1][C.SOURCE]
             n4j_node_name = self.liberate_it(node[0])
-            attrs = {C.N4J_NODE_NAME:n4j_node_name, C.CLASSIFICATION:node[1][C.CLASSIFICATION]}
+            attrs = {C.N4J_NODE_NAME:n4j_node_name, C.CLASSIFICATION:node[1][C.CLASSIFICATION], C.UUID:node[1].get(C.UUID,"-")}
             log.d_debug(f"{n4j_node_label=}, {attrs=}")
             p2n_node = p2n.Node(n4j_node_label, **attrs)
             G_p2n.create(p2n_node)
@@ -209,8 +187,7 @@ class TextProcessor:
         for sentence in doc.sents:
             log.debug(f"Executing {sentence=}")
             sentence_uuid = str(uuid.uuid4())
-            phrase_triplets, dict_triplets = self.algo3_sentencer(sentence)
-            log.debug(f"Executing {phrase_triplets=}, {dict_triplets=}")
+            phrase_triplets, dict_triplets = self.algo3_sentencer(sentence_uuid, sentence)
             self.process_save_ners_tokens(sentence_uuid, sentence, [phrase_triplets, dict_triplets])
             
             sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
@@ -219,7 +196,7 @@ class TextProcessor:
             G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
             self.G = nx.compose(self.G, G_sent)
 
-    def algo3_sentencer(self, doc):
+    def algo3_sentencer(self, sentence_uuid, doc):
         '''
         This algorithm should be fine tuned further for links
         Right now all Objects are linked to Subject or Attr of Subjects. 
@@ -262,9 +239,9 @@ class TextProcessor:
                 
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT, C.SOURCE:C.PHRASE} ,
-                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK, C.SOURCE:C.PHRASE},
-                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT, C.SOURCE:C.PHRASE}]
+                    dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT} ,
+                            {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK},
+                            {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT}]
                     log.debug(f"1.1 {dict_triplet=}")
                     phrase_triplets.append(phrase_triplet)
                     dict_triplets.append(dict_triplet)
@@ -357,7 +334,13 @@ class TextProcessor:
             dict_triplet = [{C.NODE_TEXT:source_link[0], C.CLASSIFICATION:source_link[1]},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
             log.debug(f"11. {dict_triplet=}")
             phrase_triplets.append(phrase_triplet)
-            dict_triplets.append(dict_triplet)            
+            dict_triplets.append(dict_triplet)
+
+        for triplet in dict_triplets:
+            for item in triplet:
+                item[C.UUID] = sentence_uuid
+        
+        log.debug(f"12. {dict_triplets=}")
             
         return phrase_triplets, dict_triplets
 
@@ -439,7 +422,10 @@ class TextProcessor:
     def algo3_create_graph(self, dict_triplets, text_df):
         G = nx.MultiDiGraph()
         for triplet in dict_triplets:
-            nodes = [(triplet[0][C.NODE_TEXT], {C.CLASSIFICATION:triplet[0][C.CLASSIFICATION], C.SOURCE:C.PHRASE}),(triplet[2][C.NODE_TEXT], {C.CLASSIFICATION:triplet[2][C.CLASSIFICATION], C.SOURCE:C.PHRASE})]
+            nodes = [(triplet[0][C.NODE_TEXT], 
+                        {C.CLASSIFICATION:triplet[0][C.CLASSIFICATION], C.SOURCE:C.PHRASE, C.UUID:triplet[0][C.UUID]}),
+                    (triplet[2][C.NODE_TEXT], 
+                        {C.CLASSIFICATION:triplet[2][C.CLASSIFICATION], C.SOURCE:C.PHRASE, C.UUID:triplet[2][C.UUID]})]
             link = (triplet[0][C.NODE_TEXT], triplet[2][C.NODE_TEXT], {C.LINK_LABEL:triplet[1][C.NODE_TEXT], C.SOURCE:C.PHRASE})
             log.d_debug(f"{nodes=}, {link=}")
             G.add_nodes_from(nodes)
