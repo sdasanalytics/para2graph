@@ -2,3 +2,4 @@
 /__pycache__
 /json.json
 .DS_Store
+*.cpython-39.pyc
