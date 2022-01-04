@@ -54,10 +54,15 @@ class TextProcessor:
             '''
             Break sentences into phrases
             '''
-            self.sentencer(sentence_uuid, sentence)
+            phrase_triplets, ph_3lets, nerList, noun_list = self.sentencer(sentence_uuid, sentence)
+
+            '''
+            Save the outcomes to persistent graph and tables
+            '''
+            s_g = SentenceGraph(self.G_n4j, sentence_uuid)
+            s_g.save(ph_3lets)
             
 
-            # phrase_triplets, dict_triplets = self.algo3_sentencer(sentence_uuid, sentence)
             # self.process_save_ners_tokens(sentence_uuid, sentence, [phrase_triplets, dict_triplets])
             
             # sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
@@ -123,16 +128,33 @@ class TextProcessor:
         return self.nlp(sentence)
 
     def sentencer(self, sentence_uuid, doc):
-        """
+        '''
         Breaks down the sentence into phrases and saves those in the Graph.
         First it breaks it down into phrases and linked phrases - subject, attribute, object, linked phrase
         :param sentence_uuid: the unique id for the sentence under which this loop is running
         :param doc: the nlp doc form of the sentence to be processed
-        """
+        --------------------------------------------------------------
+        The logic of the sentencer is quite interesting and can be described as follows:
+        Each sentence is made up of phrases. There are different types of phrases. These phrase types are determined by Stop words and their corresponding types.
+        | Phrase Type | Stop Word Type |
+        | ---         | ---            |
+        | Subject     | DEP_SUBJECTS   |
+        | Object      | DEP_OBJECTS + escaping NOUNS |
+        | Attribute   | DEP_ATTRIBUTES |
+        | Activities  | DEP_ACTIVITIES |
+        | Link        | POS_LINKS      |
+        Part I: Phrase boundary detection
+        - While going through each token in the sentence, a current phrase is constructed till a Stop word is found
+        - When a Stop word is found, a phrase is completed and put in a phrase Q or bucket
+        Part II: Triplet boundary detection
+        - The next step is to find a triplet. This is done by checking the status of phrase Qs or buckets. When specific conditions are met, a phrase triplet is constructed
+        - To construct phrase triplet, the context of subject Q and object Qs are important to link the phrase nodes
+        - The phrase triplets are then added to a triplet Q
+        And the above is repeated till end of sentence
+        '''
 
         '''
-        The constants below have a huge impact on the logic. Have been chosen with care.
-        But more scenarios can bring in changes
+        Stop word Constants: The constants below have a huge impact on the logic. They have been chosen with care. But more scenarios may bring in changes
         '''
         DEP_SUBJECTS = ["nsubj", "nsubjpass", "csubj", "csubjpass", "agent", "expl"]
         POS_LINKS = ["AUX","ADP", "CCONJ", "PART"] # more research might be needed here. could do a mix of POS & DEP
@@ -140,7 +162,7 @@ class TextProcessor:
         DEP_ATTRIBUTES = ["attr"]
         DEP_ACTIVITIES = ["dobj"]
         DEP_MODIFIERS = ["compound", "npadvmod"]
-        ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm", "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"] # might need to add this to DEP_X_NOUNS
+        ADJECTIVES = ["acomp", "advcl", "advmod", "amod", "appos", "nn", "nmod", "ccomp", "complm", "hmod", "infmod", "xcomp", "rcmod", "poss"," possessive"] # Not used might need to add this to DEP_X_NOUNS
         DEP_X_NOUNS = DEP_OBJECTS + DEP_ATTRIBUTES + DEP_ACTIVITIES + DEP_MODIFIERS + DEP_SUBJECTS
         DEP_PUNCT = "punct"
 
@@ -150,56 +172,57 @@ class TextProcessor:
             '''
             return "","-","","",""
 
+        '''
+        Phrase buckets are instantiated for the 5 types of phrases
+        '''
         subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()
-        phrase_triplets = []
-        # dict_triplets = []
-        ph_3lets = []
-        current_phrase = ""
-        source_link = []
+        
+        '''
+        The context Qs for subject and object
+        '''
         last_subject = ""
         object_list = []
+        source_link = []
+        
+        '''
+        The phrase triplet Qs
+        '''
+        phrase_triplets = []
+        ph_3lets = []
+
+        current_phrase = ""
+        
+        ner_list = []
+        noun_list = []
         
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in doc:
             log.debug(f"|{token.text:<12}| {token.dep_:<10}| {token.pos_:<10}| {token.head.text:12}|{token.lemma_:12}")
 
-        '''
-        Loop through each token and construct phrases
-        This loop is broken into 3 main parts:
-        - Part 1. This creates a span of words into a phrase. It ends the phrase when it finds a stop word of a particular type
-        - Part 2. It creates a graph triplet (?)
-        - Part 3. ??
-        '''
         for token in doc:            
             if token.dep_ == DEP_PUNCT: # Ignore punctuations
                 continue
 
             '''
-            Part 1:
-            1. Add the current token to the phrase
-            2.1. In the case there are 2 ore more subjects in the sentence, then it links them together
-            2.2. Continues on to find subject phrase 
+            Part I: Phrase boundary detection
             '''
             current_phrase = f"{current_phrase} {token.text}"
             log.debug(f"1. {token.text=}, {current_phrase=}")
 
+            # If token in Subject Stop Word, complete Subject phrase, add to subject context and reset current phrase
             if token.dep_ in DEP_SUBJECTS:
-                
+
+                # Part II: A special case of triplet boundary detection for 2nd subject. Might be able to refactor this code to be more elegant
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    # dict_triplet = [{C.NODE_TEXT: last_subject, C.CLASSIFICATION:C.SUBJECT} ,
-                    #         {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK, C.PHRASE_TYPE:C.LINK},
-                    #         {C.NODE_TEXT: current_phrase.lstrip(), C.CLASSIFICATION:C.SUBJECT}]
                     ph_3let = PhraseEdge(PhraseNode(sentence_uuid, last_subject, C.SUBJECT), "-",
                                         PhraseNode(sentence_uuid, current_phrase.lstrip(), C.SUBJECT),
                                         sentence_uuid)
-
                     log.debug(f"2.1 {ph_3let=}")
                     phrase_triplets.append(phrase_triplet)
-                    # dict_triplets.append(dict_triplet)
                     ph_3lets.append(ph_3let)
                     link_phrase = "-"
-                    object_list=[] # Added
+                    object_list=[]
 
                 subject_phrase = current_phrase.lstrip()
                 last_subject = subject_phrase
@@ -207,28 +230,33 @@ class TextProcessor:
                 current_phrase = ""
                 log.debug(f"2.1 {subject_phrase=}")
             
+            # If token in Link Stop Word, complete Link phrase and reset current phrase
             if token.pos_ in POS_LINKS:
                 link_phrase = current_phrase.lstrip()
                 current_phrase = ""
                 log.debug(f"3. {link_phrase=}")
 
+            # If token in Object Stop Word, complete Object phrase, add to Object context and reset current phrase
             if token.dep_ in DEP_OBJECTS:
                 object_phrase = current_phrase.lstrip()
                 object_list.append(object_phrase)
                 current_phrase = ""
                 log.debug(f"4.1 {object_phrase=}")
 
+            # If token is an ESCAPING Noun, complete Object phrase, add to Object context and reset current phrase
             if token.pos_ == C.POS_NOUN and token.dep_ not in DEP_X_NOUNS:
                 object_phrase = current_phrase.lstrip()
                 object_list.append(object_phrase)
                 current_phrase = ""
                 log.debug(f"4.2 {object_phrase=}")                
 
+            # If token in Attribute Stop Word, complete Attribute phrase and reset current phrase
             if token.dep_ in DEP_ATTRIBUTES:
                 attribute_phrase = current_phrase.lstrip()
                 current_phrase = ""
                 log.debug(f"5. {attribute_phrase=}")
             
+            # If token in Activities Stop Word, complete Activities phrase and reset current phrase
             if token.dep_ in DEP_ACTIVITIES:
                 activity_phrase = current_phrase.lstrip()
                 current_phrase = ""
@@ -236,40 +264,39 @@ class TextProcessor:
 
             log.debug(f"7. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}, {object_list=}")
 
+            '''
+            Part II: Triplet boundary detection
+            '''
+            # If there is a Subject phrase as well as an Attribute phrase, then complete phrase triplet and add to triplet Q
+            # Triplet boundary condition : Subject-[-]->Attribute
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                # dict_triplet = [{C.NODE_TEXT:subject_phrase, C.CLASSIFICATION:C.SUBJECT}, 
-                #                 {C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, 
-                #                 {C.NODE_TEXT:attribute_phrase, C.CLASSIFICATION:C.ATTRIBUTE}]
                 ph_3let = PhraseEdge(PhraseNode(sentence_uuid, subject_phrase, C.SUBJECT), link_phrase,
                                     PhraseNode(sentence_uuid, attribute_phrase, C.ATTRIBUTE),
                                     sentence_uuid)
-
                 log.debug(f"8. {ph_3let=}")
                 phrase_triplets.append(phrase_triplet)
-                # dict_triplets.append(dict_triplet)
                 ph_3lets.append(ph_3let)
-                
                 source_link = [attribute_phrase, C.ATTRIBUTE]
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()
 
+            # If there is a Subject phrase as well as an Attribute phrase, then complete phrase triplet and add to triplet Q
+            # Triplet boundary condition : Subject|Attribute|Object-[-]->Object|Activity
             if len(source_link) > 0 and (len(object_phrase) > 0 or len(activity_phrase)>0) :
-                if len(object_list)>1: # Added
-                    source_link = [object_list[-2], C.OBJECT]  # Added               
+                if len(object_list)>1:
+                    source_link = [object_list[-2], C.OBJECT]      
                 phrase_triplet = [source_link[0], link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
                 right = {}
                 if len(object_phrase) > 0:
                     right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.OBJECT}
                 if len(activity_phrase):
                     right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
-                # dict_triplet = [{C.NODE_TEXT:source_link[0], C.CLASSIFICATION:source_link[1]},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
                 ph_3let = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
                     PhraseNode(sentence_uuid, right[C.NODE_TEXT], right[C.CLASSIFICATION]),
                     sentence_uuid)
                 
                 log.debug(f"9. {ph_3let=}, {link_phrase=}")
                 phrase_triplets.append(phrase_triplet)
-                # dict_triplets.append(dict_triplet)
                 ph_3lets.append(ph_3let)
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()        
 
@@ -294,25 +321,17 @@ class TextProcessor:
                 right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
             if len(current_phrase) > 0:
                 right = {C.NODE_TEXT:current_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
-            # dict_triplet = [{C.NODE_TEXT:source_link[0], C.CLASSIFICATION:source_link[1]},{C.NODE_TEXT: link_phrase, C.CLASSIFICATION: C.LINK}, right]
             ph_3let = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
                 PhraseNode(sentence_uuid, right[C.NODE_TEXT], right[C.CLASSIFICATION]),
                 sentence_uuid)                
 
             log.debug(f"11. {ph_3let=}")
             phrase_triplets.append(phrase_triplet)
-            # dict_triplets.append(dict_triplet)
             ph_3lets.append(ph_3let)
         
         log.debug(f"12. {ph_3lets=}")
-        s_g = SentenceGraph(self.G_n4j, sentence_uuid)
-        s_g.save(ph_3lets)
-
-        # for triplet in dict_triplets:
-        #     for item in triplet:
-        #         item[C.UUID] = sentence_uuid
             
-        # return phrase_triplets, dict_triplets
+        return phrase_triplets, ph_3lets, ner_list, noun_list
 
     
             

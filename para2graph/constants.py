@@ -18,8 +18,8 @@ NEO4J_USER = 'neo4j'
 NEO4J_PASSWORD = "unonothing"
 NEO4J_URI = "bolt://localhost:7687"
 
-SPACY_MODEL = "en_core_web_lg"
-# SPACY_MODEL = "en_core_web_trf"
+# SPACY_MODEL = "en_core_web_lg"
+SPACY_MODEL = "en_core_web_trf"
 
 TAB_SENTENCES = "sentences"
 TAB_EXT_KBS = "external_kbs"
