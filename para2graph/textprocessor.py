@@ -8,7 +8,7 @@ import constants as C
 import spacy
 from loguru import logger as log
 import uuid
-from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph
+from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable
 import sqlite3
 import py2neo as p2n
 
@@ -50,7 +50,11 @@ class TextProcessor:
             '''
             sentence = self.preprocess_sentence_for_apostrophe(sentence)
 
-
+            '''
+            Persist the sentence tokens in db
+            '''
+            s_t = SentenceTable(self.db)
+            s_t.persist(sentence_uuid, sentence)
             '''
             Break sentences into phrases
             '''
@@ -61,6 +65,7 @@ class TextProcessor:
             '''
             s_g = SentenceGraph(self.G_n4j, sentence_uuid)
             s_g.save(ph_3lets)
+
             
 
             # self.process_save_ners_tokens(sentence_uuid, sentence, [phrase_triplets, dict_triplets])
@@ -332,6 +337,3 @@ class TextProcessor:
         log.debug(f"12. {ph_3lets=}")
             
         return phrase_triplets, ph_3lets, ner_list, noun_list
-
-    
-            

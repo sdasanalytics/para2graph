@@ -22,6 +22,7 @@ def main():
         print("Please provide params:\n1) interaction_type (inline|file)\n2) if param1 is file - provide full filepath")
         exit(0)
     tp = TextProcessor("truncate") # ToDo: add this as a cmd line parameter
+    # tp = TextProcessor("append") # ToDo: add this as a cmd line parameter
 
     if sys.argv[1] == "file":
         if len(sys.argv) != 3:
