@@ -3,3 +3,5 @@
 /json.json
 .DS_Store
 *.cpython-39.pyc
+para2graph/__pycache__/p2g_dataclasses.cpython-39.pyc
+para2graph/__pycache__/textprocessor.cpython-39.pyc
