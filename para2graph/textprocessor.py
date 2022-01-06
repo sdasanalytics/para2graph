@@ -4,13 +4,17 @@
 # Program: artmind
 #----------------------------#
 
+from types import TracebackType
+
+from numpy.lib.twodim_base import tri
 import constants as C
 import spacy
 from loguru import logger as log
 import uuid
-from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable
+from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge
 import sqlite3
 import py2neo as p2n
+
 
 class TextProcessor:
     """
@@ -19,13 +23,9 @@ class TextProcessor:
     def __init__(self, mode="truncate"):
         self.nlp = spacy.load(C.SPACY_MODEL)
         self.db = sqlite3.connect(C.SQL_LOCAL_DB)
-        # self.G = nx.MultiDiGraph() <-- Change
         # self.kbs = external_kbs.Explorer() <-- Change
         self.G_n4j = p2n.Graph(C.NEO4J_URI, auth=(C.NEO4J_USER, C.NEO4J_PASSWORD))
-        if mode == "append":
-        #     self.G = nx.read_gexf(C.GEXF_PATH)
-            ...
-        else:
+        if mode == "truncate":
             self.G_n4j.delete_all()        
     
     def execute(self, text):
@@ -54,22 +54,42 @@ class TextProcessor:
             Persist the sentence tokens in db
             '''
             s_t = SentenceTable(self.db)
-            s_t.persist(sentence_uuid, sentence)
+            nouns, ners = s_t.persist(sentence_uuid, sentence)
             '''
             Break sentences into phrases
             '''
-            phrase_triplets, ph_3lets, nerList, noun_list = self.sentencer(sentence_uuid, sentence)
+            ph_3lets = self.sentencer(sentence_uuid, sentence)
+            
+            # de-duped phrase node triplets
+            phrases = []
+            for triplet in ph_3lets: 
+                if triplet.head not in phrases:
+                    phrases.append(triplet.head)
+                if triplet.tail not in phrases:
+                    phrases.append(triplet.tail)
+
+            # de-duped nouns
+            deduped_nouns = set()
+            for noun in nouns:
+                for ner in ners:
+                    if noun not in ner[0]:
+                        deduped_nouns.add(noun)
+
+            noun_ner_3lets = []
+            for phrase in phrases:
+                for noun in deduped_nouns:
+                    if noun in phrase.phrase:
+                        noun_ner_3lets.append(PhraseInfoEdge(phrase, NounNode(noun)))
+                for ner in ners:
+                    if ner[0] in phrase.phrase:
+                        noun_ner_3lets.append(PhraseInfoEdge(phrase, NERNode(ner[0], ner[1])))
 
             '''
             Save the outcomes to persistent graph and tables
             '''
             s_g = SentenceGraph(self.G_n4j, sentence_uuid)
-            s_g.save(ph_3lets)
-
-            
-
-            # self.process_save_ners_tokens(sentence_uuid, sentence, [phrase_triplets, dict_triplets])
-            
+            s_g.save(ph_3lets, noun_ner_3lets)
+          
             # sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
             # params = (sentence_uuid, )
             # vw_text_df = pd.read_sql(sql_str, self.db, params=params)
@@ -196,9 +216,6 @@ class TextProcessor:
         ph_3lets = []
 
         current_phrase = ""
-        
-        ner_list = []
-        noun_list = []
         
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         for token in doc:
@@ -336,4 +353,4 @@ class TextProcessor:
         
         log.debug(f"12. {ph_3lets=}")
             
-        return phrase_triplets, ph_3lets, ner_list, noun_list
+        return ph_3lets
