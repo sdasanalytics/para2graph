@@ -17,42 +17,56 @@ class SentenceGraph:
         self.G_n4j = G_n4j
         self.sentence_uuid = sentence_uuid
 
-    def save(self, ph_3lets, noun_ner_3lets):
+    def save(self, ph_3plets, noun_ner_3plets, kb3_plets):
         '''
         This function saves the sentence phrases into neo4j. It ensure creation of single nodes per phrase.
         This is achieved by first checking if the node is there in neo4j db based on phrase text and s_uuid.
         A new node is created only if the the node does not exist yet
         '''
-        for ph_3let in ph_3lets:
-            log.debug(f"{ph_3let=}")
+        for ph_3plet in ph_3plets:
+            log.debug(f"{ph_3plet=}")
 
-            head = self.G_n4j.nodes.match(C.PHRASE, name=ph_3let.head.phrase, s_uuid=self.sentence_uuid).first()
+            head = self.G_n4j.nodes.match(C.PHRASE, name=ph_3plet.head.phrase, s_uuid=self.sentence_uuid).first()
             if head is None:
-                head = ph_3let.head
-            tail = self.G_n4j.nodes.match(C.PHRASE, name=ph_3let.tail.phrase, s_uuid=self.sentence_uuid).first()
+                head = ph_3plet.head
+            tail = self.G_n4j.nodes.match(C.PHRASE, name=ph_3plet.tail.phrase, s_uuid=self.sentence_uuid).first()
             if tail is None:
-                tail = ph_3let.tail
-            link_phrase = ph_3let.phrase
+                tail = ph_3plet.tail
+            link_phrase = ph_3plet.phrase
             if link_phrase == '':
                 link_phrase = "-x-"
 
-            log.debug(f"{head=}, {ph_3let.phrase=}, {tail=}")
+            log.debug(f"{head=}, {ph_3plet.phrase=}, {tail=}")
             phrase_edge = PhraseEdge(head, link_phrase , tail, self.sentence_uuid)
             self.G_n4j.create(phrase_edge)
 
-        for noun_ner_3let in noun_ner_3lets:
-            log.debug(f"{noun_ner_3let=}")
+        for noun_ner_3plet in noun_ner_3plets:
+            log.debug(f"{noun_ner_3plet=}")
 
-            head = self.G_n4j.nodes.match(C.PHRASE, name=noun_ner_3let.head.phrase, s_uuid=self.sentence_uuid).first()
+            head = self.G_n4j.nodes.match(C.PHRASE, name=noun_ner_3plet.head.phrase, s_uuid=self.sentence_uuid).first()
             if head is None:
-                head = noun_ner_3let.head
-            tail = self.G_n4j.nodes.match(noun_ner_3let.tail.type, name=noun_ner_3let.tail.text).first()
+                head = noun_ner_3plet.head
+            tail = self.G_n4j.nodes.match(noun_ner_3plet.tail.type, name=noun_ner_3plet.tail.text).first()
             if tail is None:
-                tail = noun_ner_3let.tail
+                tail = noun_ner_3plet.tail
 
             log.debug(f"{head=}, {tail=}")
             edge = PhraseInfoEdge(head, tail)
             self.G_n4j.create(edge)
+
+        for kb3_plet in kb3_plets:
+            log.debug(f"{kb3_plet=}")
+
+            head = self.G_n4j.nodes.match(kb3_plet.head.type, name=kb3_plet.head.text).first()
+            if head is None:
+                head = kb3_plet.head
+            tail = self.G_n4j.nodes.match(kb3_plet.tail.type, name=kb3_plet.tail.text).first()
+            if tail is None:
+                tail = kb3_plet.tail
+
+            log.debug(f"{head=}, {tail=}")
+            edge = PhraseInfoEdge(head, tail)
+            self.G_n4j.create(edge)            
 
 
 class SentenceTable:
@@ -117,7 +131,7 @@ class PhraseNode(p2n.Node):
 class PhraseEdge(p2n.Relationship):
     def __init__(self, head, phrase, tail, sentence_uuid):
         '''
-        Creates an Edge which is specific to a Phrase. It addds the Relationship property for classification as "Phrase_Link"
+        Creates an Edge which is specific to a Phrase. It adds the Relationship property for classification as "Phrase_Link"
         :param head: The head PhraseNode
         :param tail: The tail PhraseNode
         :param sentence_uuid: the unique id of the sentence
@@ -157,7 +171,7 @@ class NERNode(p2n.Node):
 class PhraseInfoEdge(p2n.Relationship):
     def __init__(self, head, tail):
         '''
-        Creates an Edge which is specific to a Phrase. It addds the Relationship property for classification as "Phrase_Link"
+        Creates an Edge which is specific to a Phrase. 
         :param head: The head PhraseNode
         :param tail: The tail NER or Noun Node
         '''
@@ -167,12 +181,28 @@ class PhraseInfoEdge(p2n.Relationship):
         # Hence a new one needs to be created if you want different values. That's what is happening in the Sentence_Graph.save()
         super().__init__(head, "-", tail)
 
-@dataclass
-class KBNode:
-    id : str
-    phrase : str
+class KBNode(p2n.Node):
+    def __init__(self, text, kb_source):
+        '''
+        Creates a Node which is specific to a KB. It automatically puts the neo4j Node's label as kb_source
+        :param text: this is the text that will show up on the graph Node
+        :param kb_source: this is the Node label
+        '''
+        self.text = text
+        self.type = kb_source
+        # The Node is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se.
+        super().__init__(kb_source, name=text)
 
-@dataclass
-class DBPediaNode (KBNode):
-    source : str = C.DBPEDIA_TYPE
+# class InfoKBEdge(p2n.Relationship):
+#     def __init__(self, head, tail):
+#         '''
+#         Creates an Edge which is specific to a Phrase. 
+#         :param head: The head NER or Noun Node 
+#         :param tail: The KB Node
+#         '''
+#         self.head = head
+#         self.tail = tail
+#         # The Edge is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se. 
+#         # Hence a new one needs to be created if you want different values. That's what is happening in the Sentence_Graph.save()
+#         super().__init__(head, "-", tail)
 

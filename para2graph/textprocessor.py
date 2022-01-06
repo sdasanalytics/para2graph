@@ -7,14 +7,14 @@
 from types import TracebackType
 
 from numpy.lib.twodim_base import tri
+from py2neo.matching import NE
 import constants as C
 import spacy
 from loguru import logger as log
 import uuid
-from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge
+from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge, KBNode
 import sqlite3
 import py2neo as p2n
-
 
 class TextProcessor:
     """
@@ -55,46 +55,72 @@ class TextProcessor:
             '''
             s_t = SentenceTable(self.db)
             nouns, ners = s_t.persist(sentence_uuid, sentence)
+            
             '''
             Break sentences into phrases
             '''
-            ph_3lets = self.sentencer(sentence_uuid, sentence)
-            
-            # de-duped phrase node triplets
-            phrases = []
-            for triplet in ph_3lets: 
-                if triplet.head not in phrases:
-                    phrases.append(triplet.head)
-                if triplet.tail not in phrases:
-                    phrases.append(triplet.tail)
+            ph_3plets = self.sentencer(sentence_uuid, sentence)
 
-            # de-duped nouns
-            deduped_nouns = set()
-            for noun in nouns:
-                for ner in ners:
-                    if noun not in ner[0]:
-                        deduped_nouns.add(noun)
+            '''
+            Get edges that are Phrase->Noun and Phrase->NER
+            '''
+            noun_ner_3plets = self.construct_noun_ner_3plets(nouns, ners, ph_3plets)
 
-            noun_ner_3lets = []
-            for phrase in phrases:
-                for noun in deduped_nouns:
-                    if noun in phrase.phrase:
-                        noun_ner_3lets.append(PhraseInfoEdge(phrase, NounNode(noun)))
-                for ner in ners:
-                    if ner[0] in phrase.phrase:
-                        noun_ner_3lets.append(PhraseInfoEdge(phrase, NERNode(ner[0], ner[1])))
+            kb_3plets = self.constuct_kb_3plets(nouns, ners)
 
             '''
             Save the outcomes to persistent graph and tables
             '''
             s_g = SentenceGraph(self.G_n4j, sentence_uuid)
-            s_g.save(ph_3lets, noun_ner_3lets)
-          
+            s_g.save(ph_3plets, noun_ner_3plets, kb_3plets)
+
             # sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
             # params = (sentence_uuid, )
             # vw_text_df = pd.read_sql(sql_str, self.db, params=params)
             # G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
             # self.G = nx.compose(self.G, G_sent)
+
+    def dedupe_nouns_from_ners(self, nouns, ners):
+        deduped_nouns = set()
+        for noun in nouns:
+            for ner in ners:
+                if noun not in ner[0]:
+                    deduped_nouns.add(noun)
+        return deduped_nouns
+
+    def construct_noun_ner_3plets(self, nouns, ners, ph_3plets):
+        '''
+        This function takes the nouns, ners and the phrase triplets and creates PhraseInfoEdges
+        '''
+        # de-duped phrase node triplets
+        phrases = []
+        for triplet in ph_3plets: 
+            if triplet.head not in phrases:
+                phrases.append(triplet.head)
+            if triplet.tail not in phrases:
+                phrases.append(triplet.tail)
+
+        # de-duped nouns
+        deduped_nouns = self.dedupe_nouns_from_ners(nouns, ners)
+
+        noun_ner_3plets = []
+        for phrase in phrases:
+            for noun in deduped_nouns:
+                if noun in phrase.phrase:
+                    noun_ner_3plets.append(PhraseInfoEdge(phrase, NounNode(noun)))
+            for ner in ners:
+                if ner[0] in phrase.phrase:
+                    noun_ner_3plets.append(PhraseInfoEdge(phrase, NERNode(ner[0], ner[1])))
+        return noun_ner_3plets
+          
+    def constuct_kb_3plets(self, nouns, ners):
+        kb_3plets = []
+        deduped_nouns = self.dedupe_nouns_from_ners(nouns, ners)
+        for noun in deduped_nouns:
+            kb_3plets.append(PhraseInfoEdge(NounNode(noun),KBNode(noun+"_kb", "dbpedia"))) # ToDo - replace with actual KB info
+        for ner in ners:
+            kb_3plets.append(PhraseInfoEdge(NERNode(ner[0],ner[1]),KBNode(ner[0]+"_kb", "conceptnet"))) # ToDo - replace with actual KB info
+        return kb_3plets
 
     def preprocess_sentence_for_apostrophe(self, doc):
         """
@@ -213,7 +239,7 @@ class TextProcessor:
         The phrase triplet Qs
         '''
         phrase_triplets = []
-        ph_3lets = []
+        ph_3plets = []
 
         current_phrase = ""
         
@@ -237,12 +263,12 @@ class TextProcessor:
                 # Part II: A special case of triplet boundary detection for 2nd subject. Might be able to refactor this code to be more elegant
                 if last_subject != "":
                     phrase_triplet = [last_subject, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                    ph_3let = PhraseEdge(PhraseNode(sentence_uuid, last_subject, C.SUBJECT), "-",
+                    ph_3plet = PhraseEdge(PhraseNode(sentence_uuid, last_subject, C.SUBJECT), "-",
                                         PhraseNode(sentence_uuid, current_phrase.lstrip(), C.SUBJECT),
                                         sentence_uuid)
-                    log.debug(f"2.1 {ph_3let=}")
+                    log.debug(f"2.1 {ph_3plet=}")
                     phrase_triplets.append(phrase_triplet)
-                    ph_3lets.append(ph_3let)
+                    ph_3plets.append(ph_3plet)
                     link_phrase = "-"
                     object_list=[]
 
@@ -293,12 +319,12 @@ class TextProcessor:
             # Triplet boundary condition : Subject-[-]->Attribute
             if len(subject_phrase) > 0 and len(attribute_phrase) > 0:
                 phrase_triplet = [subject_phrase, link_phrase, attribute_phrase, object_phrase, activity_phrase, current_phrase]
-                ph_3let = PhraseEdge(PhraseNode(sentence_uuid, subject_phrase, C.SUBJECT), link_phrase,
+                ph_3plet = PhraseEdge(PhraseNode(sentence_uuid, subject_phrase, C.SUBJECT), link_phrase,
                                     PhraseNode(sentence_uuid, attribute_phrase, C.ATTRIBUTE),
                                     sentence_uuid)
-                log.debug(f"8. {ph_3let=}")
+                log.debug(f"8. {ph_3plet=}")
                 phrase_triplets.append(phrase_triplet)
-                ph_3lets.append(ph_3let)
+                ph_3plets.append(ph_3plet)
                 source_link = [attribute_phrase, C.ATTRIBUTE]
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()
 
@@ -313,13 +339,13 @@ class TextProcessor:
                     right = {C.NODE_TEXT:object_phrase, C.CLASSIFICATION:C.OBJECT}
                 if len(activity_phrase):
                     right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
-                ph_3let = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
+                ph_3plet = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
                     PhraseNode(sentence_uuid, right[C.NODE_TEXT], right[C.CLASSIFICATION]),
                     sentence_uuid)
                 
-                log.debug(f"9. {ph_3let=}, {link_phrase=}")
+                log.debug(f"9. {ph_3plet=}, {link_phrase=}")
                 phrase_triplets.append(phrase_triplet)
-                ph_3lets.append(ph_3let)
+                ph_3plets.append(ph_3plet)
                 subject_phrase, link_phrase, object_phrase, attribute_phrase, activity_phrase = reset_phrases()        
 
             log.debug(f"10. {source_link=}, {subject_phrase=}, {link_phrase=}, {object_phrase=}, {attribute_phrase=}, {activity_phrase=}, {current_phrase=}, {last_subject=}, {object_list=}")
@@ -343,14 +369,14 @@ class TextProcessor:
                 right = {C.NODE_TEXT:activity_phrase, C.CLASSIFICATION:C.ACTIVITY}
             if len(current_phrase) > 0:
                 right = {C.NODE_TEXT:current_phrase, C.CLASSIFICATION:C.ATTRIBUTE}
-            ph_3let = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
+            ph_3plet = PhraseEdge(PhraseNode(sentence_uuid, source_link[0], source_link[1]), link_phrase,
                 PhraseNode(sentence_uuid, right[C.NODE_TEXT], right[C.CLASSIFICATION]),
                 sentence_uuid)                
 
-            log.debug(f"11. {ph_3let=}")
+            log.debug(f"11. {ph_3plet=}")
             phrase_triplets.append(phrase_triplet)
-            ph_3lets.append(ph_3let)
+            ph_3plets.append(ph_3plet)
         
-        log.debug(f"12. {ph_3lets=}")
+        log.debug(f"12. {ph_3plets=}")
             
-        return ph_3lets
+        return ph_3plets
