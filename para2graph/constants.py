@@ -5,12 +5,13 @@
 #----------------------------#
 
 SQL_LOCAL_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db"
-GEXF_PATH = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor.gexf"
+SQL_EXT_KB_DB = "/Users/surjitdas/Downloads/nlu_processor/nlu_processor_v2.db" # The External_KBs table in the same db. Can be different if required
 LOG_PATH = '/Users/surjitdas/Downloads/nlu_processor/nlu_processor.log'
 
 WIKIFIER_URL = "http://www.wikifier.org/annotate-article"
 WIKIDATA_API_ENDPOINT_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_SPARQL_ENDPOINT_URL = "https://query.wikidata.org/sparql"
+WIKIFIER_USER_KEY = "vvswrnlywccfgddhmprbdwviamhnuc"
 # CONCEPTNET_API_ENDPOINT_URL = "http://api.conceptnet.io/c/en/" not using the Web API, but directly the local database & API
 CONCEPTNET_LOCAL_DB = "/Volumes/Surjit_SSD_1/tech/conceptnet.db"
 
@@ -39,6 +40,11 @@ COL_WIKIDATACLASS = "list_wikiDataClass"
 COL_DBPEDIA = "list_dbPediaType"
 COL_CONCEPTNET = "list_conceptNetType"
 COL_TS = "ts"
+
+WDINSTANCE = "wdInstance"
+WIKIDATA_CLASS = "wikiDataClass"
+DBPEDIA = "dbPediaType"
+CONCEPTNET = "conceptNetType"
 
 COLUMNS_KBS_SOURCES = [COL_WDINSTANCE, COL_WIKIDATACLASS, COL_DBPEDIA, COL_CONCEPTNET]
 COLUMNS_TOKEN = [COL_TOKEN_DEP, COL_TOKEN_POS, COL_TOKEN_HEAD_TEXT, COL_TOKEN_LEMMA, COL_COMP_NOUN, COL_VERB_PHRASE]
@@ -74,10 +80,5 @@ PHRASE = "Phrase"
 PHRASE_LINK = "Phrase_Link"
 N4J_NODE_NAME = "name"
 
-
-WD_INSTANCE = "wdInstance"
-WIKIDATA_CLASS = "wikiDataClass"
-DBPEDIA_TYPE = "dbPediaType"
-CONCEPTNET_TYPE = "conceptNetType"
 
 UUID = "uuid"

@@ -13,12 +13,15 @@ import json
 import sys
 import requests
 from SPARQLWrapper import SPARQLWrapper, JSON
+import pandas as pd
+from datetime import datetime
+import sqlite3
 
 cn_l.connect(C.CONCEPTNET_LOCAL_DB)
 
 class Explorer:
-    def __init__(self) -> None:
-        pass
+    def __init__(self):
+        self.db = sqlite3.connect(C.SQL_EXT_KB_DB)
     
     def get_conceptnet_data(self, text):
         conceptnet_list = []
@@ -35,7 +38,7 @@ class Explorer:
         # Prepare the URL.
         data = urllib.parse.urlencode([
             ("text", text), ("lang", lang),
-            ("userKey", "vvswrnlywccfgddhmprbdwviamhnuc") # this is my userkey
+            ("userKey", C.WIKIFIER_USER_KEY) # this is my userkey
             ,
             ("pageRankSqThreshold", "%g" %
             threshold), ("applyPageRankSqThreshold", "false"), # This flag is important - true seems to filter out a lot
@@ -144,3 +147,43 @@ class Explorer:
         
         log.debug(records_dict)
         return records_dict
+
+    def get_ext_kb_info(self, text):
+        '''
+        Get's all the external kb information from each of the external data sources and returns them as a dict
+        It first checks if the information about the token is available in the database, if so returns from db
+        Otherwise makes the API/web calls, saves it to db for later use and then returns
+        Thus this is a fully encapsulated function
+        '''
+        sql_str = f"select * from {C.TAB_EXT_KBS} where {C.COL_ITEM}=?"
+        params = (text,)
+        df = pd.read_sql(sql_str, self.db, params=params)
+        df = df.fillna("[]")
+        if len(df) != 0:
+            return {C.COL_WIKIDATACLASS:df[C.COL_WIKIDATACLASS][0], C.COL_WDINSTANCE:df[C.COL_WDINSTANCE][0],
+                        C.COL_DBPEDIA:df[C.COL_DBPEDIA][0], C.COL_CONCEPTNET:df[C.COL_CONCEPTNET][0]}
+        else:
+            wk_dict = self.wikifier(text)
+            wikidataclass = str(wk_dict[C.COL_WIKIDATACLASS])
+            dbpedia = str(wk_dict[C.COL_DBPEDIA])
+            wdinstance = str(self.get_wikidata(text)[C.COL_WDINSTANCE])
+            conceptnet = str(self.get_conceptnet_data(text.lower()))
+            ts = datetime.now()
+            
+            cols = [C.COL_ITEM,C.COL_WIKIDATACLASS, C.COL_DBPEDIA, C.COL_WDINSTANCE,C.COL_CONCEPTNET, C.COL_TS]
+            
+            df = pd.DataFrame([[text, wikidataclass,dbpedia,wdinstance,conceptnet,ts]],columns=cols)
+            df.to_sql(C.TAB_EXT_KBS, self.db, if_exists="append", index=False)
+            return {C.COL_WIKIDATACLASS:wikidataclass, C.COL_WDINSTANCE:dbpedia, C.COL_DBPEDIA:wdinstance, C.COL_CONCEPTNET:conceptnet}
+
+def test(text):
+    exp = Explorer()
+    x = exp.get_ext_kb_info("Southern")
+    print(x[C.COL_WIKIDATACLASS])
+    print(x[C.COL_WDINSTANCE])
+    print(x[C.COL_DBPEDIA])
+    print(x[C.COL_CONCEPTNET])
+
+if __name__=="__main__":
+    test("mathematics")
+

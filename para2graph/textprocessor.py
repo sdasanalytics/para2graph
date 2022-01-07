@@ -13,8 +13,10 @@ import spacy
 from loguru import logger as log
 import uuid
 from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge, KBNode
+from external_kbs import Explorer
 import sqlite3
 import py2neo as p2n
+import ast
 
 class TextProcessor:
     """
@@ -23,7 +25,7 @@ class TextProcessor:
     def __init__(self, mode="truncate"):
         self.nlp = spacy.load(C.SPACY_MODEL)
         self.db = sqlite3.connect(C.SQL_LOCAL_DB)
-        # self.kbs = external_kbs.Explorer() <-- Change
+        self.kbs = Explorer()
         self.G_n4j = p2n.Graph(C.NEO4J_URI, auth=(C.NEO4J_USER, C.NEO4J_PASSWORD))
         if mode == "truncate":
             self.G_n4j.delete_all()        
@@ -57,7 +59,7 @@ class TextProcessor:
             nouns, ners = s_t.persist(sentence_uuid, sentence)
             
             '''
-            Break sentences into phrases
+            Break sentences into phrases and get PhraseEdges
             '''
             ph_3plets = self.sentencer(sentence_uuid, sentence)
 
@@ -66,21 +68,21 @@ class TextProcessor:
             '''
             noun_ner_3plets = self.construct_noun_ner_3plets(nouns, ners, ph_3plets)
 
+            '''
+            Get edges that are Noun|NER->KB_Info 
+            '''
             kb_3plets = self.constuct_kb_3plets(nouns, ners)
 
             '''
-            Save the outcomes to persistent graph and tables
+            Save the outcomes to persistent graph
             '''
             s_g = SentenceGraph(self.G_n4j, sentence_uuid)
             s_g.save(ph_3plets, noun_ner_3plets, kb_3plets)
 
-            # sql_str = f"select * from {C.VW_SENTENCES} where {C.COL_SENT_UUID} = ?"
-            # params = (sentence_uuid, )
-            # vw_text_df = pd.read_sql(sql_str, self.db, params=params)
-            # G_sent = self.algo3_create_graph(dict_triplets, vw_text_df)
-            # self.G = nx.compose(self.G, G_sent)
-
-    def dedupe_nouns_from_ners(self, nouns, ners):
+    def dedup_nouns_from_ners(self, nouns, ners):
+        '''
+        Removes the nouns that are in the NERs
+        '''
         deduped_nouns = set()
         for noun in nouns:
             for ner in ners:
@@ -101,7 +103,7 @@ class TextProcessor:
                 phrases.append(triplet.tail)
 
         # de-duped nouns
-        deduped_nouns = self.dedupe_nouns_from_ners(nouns, ners)
+        deduped_nouns = self.dedup_nouns_from_ners(nouns, ners)
 
         noun_ner_3plets = []
         for phrase in phrases:
@@ -114,14 +116,38 @@ class TextProcessor:
         return noun_ner_3plets
           
     def constuct_kb_3plets(self, nouns, ners):
+        '''
+        Takes the Noun|NER creates Noun|NER -> KB_Info (for all 4 KBs) nodes + edges
+        '''
         kb_3plets = []
-        deduped_nouns = self.dedupe_nouns_from_ners(nouns, ners)
+        deduped_nouns = self.dedup_nouns_from_ners(nouns, ners)
         for noun in deduped_nouns:
-            kb_3plets.append(PhraseInfoEdge(NounNode(noun),KBNode(noun+"_kb", "dbpedia"))) # ToDo - replace with actual KB info
+            kb_info = self.kbs.get_ext_kb_info(noun)
+            kb_3plets = self.add_meta_nodes(NounNode(noun), kb_info, kb_3plets, [C.WIKIDATA_CLASS, C.DBPEDIA, C.WDINSTANCE, C.CONCEPTNET])
+
         for ner in ners:
-            kb_3plets.append(PhraseInfoEdge(NERNode(ner[0],ner[1]),KBNode(ner[0]+"_kb", "conceptnet"))) # ToDo - replace with actual KB info
+            kb_info = self.kbs.get_ext_kb_info(ner[0])
+            kb_3plets = self.add_meta_nodes(NERNode(ner[0],ner[1]), kb_info, kb_3plets, [C.WIKIDATA_CLASS, C.DBPEDIA, C.WDINSTANCE, C.CONCEPTNET])
+        
         return kb_3plets
 
+    def add_meta_nodes(self, head, kb_info, kb_3plets, sources, max_nodes=3):
+        '''
+        Utility function used by constuct_kb_3plets to create the KB_Info node + edges
+        It iterates by each type of source
+        '''
+        for source in sources:
+            # The kb_info coming from the external_kbs.Explorer returns a list as a string. That's how it is stored in the db too.
+            # The ast.literal_eval function converts that string into a list
+            label_list = ast.literal_eval(kb_info[f"list_{source}"])
+            for label in label_list[:max_nodes]:
+                if label not in ['Wikimedia disambiguation page', 'MediaWiki main-namespace page', 'list', 'class', 
+                            'word-sense disambiguation', 'Wikimedia internal item', 'MediaWiki page', 'MediaWiki help page','Wikimedia non-main namespace',
+                            'wd_UNKNOWN', 'UNKNOWN']:
+                    tail = KBNode(label, source)
+                    kb_3plets.append(PhraseInfoEdge(head,tail))
+        return kb_3plets
+        
     def preprocess_sentence_for_apostrophe(self, doc):
         """
         Very tricky function to transform <x's y> or <s' y> as <y of x> or <y of s>   
