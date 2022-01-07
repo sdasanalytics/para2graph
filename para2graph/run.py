@@ -34,7 +34,7 @@ def main():
             for line in tqdm(lines, desc="Processing sentences"):
                 log.info(f"Processing line: {line}")
                 tp.execute(line.strip())
-            # tp.save_graph(mode="overwrite") <-- Change
+
         log.info("Done")
     else:
         text=input("Para: ")
@@ -43,7 +43,6 @@ def main():
             tp.execute(text) 
             print("Done...")
             text = input("Para: ")
-        # tp.save_graph(mode="overwrite") <-- Change
 
 if __name__=="__main__":
     main()
