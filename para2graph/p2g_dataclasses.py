@@ -17,7 +17,7 @@ class SentenceGraph:
         self.G_n4j = G_n4j
         self.sentence_uuid = sentence_uuid
 
-    def save(self, ph_3plets, noun_ner_3plets, kb3_plets):
+    def save(self, ph_3plets, ner_pos_3plets, kb3_plets):
         '''
         This function saves the sentence phrases into neo4j. It ensure creation of single nodes per phrase.
         This is achieved by first checking if the node is there in neo4j db based on phrase text and s_uuid.
@@ -40,15 +40,15 @@ class SentenceGraph:
             phrase_edge = PhraseEdge(head, link_phrase , tail, self.sentence_uuid)
             self.G_n4j.create(phrase_edge)
 
-        for noun_ner_3plet in noun_ner_3plets:
-            log.debug(f"{noun_ner_3plet=}")
+        for ner_pos_3plet in ner_pos_3plets:
+            log.debug(f"{ner_pos_3plet=}")
 
-            head = self.G_n4j.nodes.match(C.PHRASE, name=noun_ner_3plet.head.phrase, s_uuid=self.sentence_uuid).first()
+            head = self.G_n4j.nodes.match(C.PHRASE, name=ner_pos_3plet.head.phrase, s_uuid=self.sentence_uuid).first()
             if head is None:
-                head = noun_ner_3plet.head
-            tail = self.G_n4j.nodes.match(noun_ner_3plet.tail.type, name=noun_ner_3plet.tail.text).first()
+                head = ner_pos_3plet.head
+            tail = self.G_n4j.nodes.match(ner_pos_3plet.tail.type, name=ner_pos_3plet.tail.text).first()
             if tail is None:
-                tail = noun_ner_3plet.tail
+                tail = ner_pos_3plet.tail
 
             log.debug(f"{head=}, {tail=}")
             edge = PhraseInfoEdge(head, tail)
@@ -77,8 +77,10 @@ class SentenceTable:
         '''
         This function saves the sentence tokens along with the token information, as well as NERs to the database
         '''        
-        nouns = []
         ners = []
+        nouns = []
+        adjs = []
+        verbs = []
         log.debug("|token.text| token.dep_| token.pos_| token.head.text|token.lemma_|")
         df = pd.DataFrame()
         for token in sentence:
@@ -89,6 +91,10 @@ class SentenceTable:
             df = df.append(row, ignore_index=True)
             if token.pos_ in [C.POS_NOUN, C.POS_PROPER_NOUN]:
                 nouns.append(token.text)
+            if token.pos_ == C.POS_ADJ:
+                adjs.append(token.lemma_)
+            if token.pos_ == C.POS_VERB:
+                verbs.append(token.lemma_)
 
         for entity in sentence.ents:
             ner_row = {C.COL_SENT_UUID:sentence_uuid, C.COL_TYPE:C.NER, C.COL_ITEM:entity.text, C.COL_NER_TYPE:entity.label_, C.COL_TS:datetime.now()}
@@ -97,7 +103,8 @@ class SentenceTable:
         
         df.to_sql(C.TAB_SENTENCES, self.db, if_exists="append", index=False)
 
-        return nouns, ners
+        log.debug(f"{ners=}, {nouns=}, {adjs=}, {verbs=}")
+        return ners, nouns, adjs, verbs
 
 class ExternalKBsTable:
     ...
@@ -153,7 +160,6 @@ class NounNode(p2n.Node):
         '''
         self.text = noun_text
         self.type = C.NOUN
-        # The Node is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se.
         super().__init__(C.NOUN, name=noun_text)
 
 class NERNode(p2n.Node):
@@ -165,8 +171,27 @@ class NERNode(p2n.Node):
         '''
         self.text = ner_text
         self.type = ner_type
-        # The Node is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se.
         super().__init__(ner_type, name=ner_text)
+
+class AdjNode(p2n.Node):
+    def __init__(self, adj_text):
+        '''
+        Creates a Node which is specific to an Adjective. It automatically puts the neo4j Node's label as "Adjective"
+        :param adj_text: this is the text that will show up on the graph Node
+        '''
+        self.text = adj_text
+        self.type = C.ADJ
+        super().__init__(C.ADJ, name=adj_text)     
+
+class VerbNode(p2n.Node):
+    def __init__(self, verb_text):
+        '''
+        Creates a Node which is specific to an Verb. It automatically puts the neo4j Node's label as "Verb"
+        :param verb_text: this is the text that will show up on the graph Node
+        '''
+        self.text = verb_text
+        self.type = C.VERB
+        super().__init__(C.VERB, name=verb_text)              
 
 class PhraseInfoEdge(p2n.Relationship):
     def __init__(self, head, tail):
@@ -190,19 +215,5 @@ class KBNode(p2n.Node):
         '''
         self.text = text
         self.type = kb_source
-        # The Node is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se.
         super().__init__(kb_source, name=text)
-
-# class InfoKBEdge(p2n.Relationship):
-#     def __init__(self, head, tail):
-#         '''
-#         Creates an Edge which is specific to a Phrase. 
-#         :param head: The head NER or Noun Node 
-#         :param tail: The KB Node
-#         '''
-#         self.head = head
-#         self.tail = tail
-#         # The Edge is created with the values that are used during initialization. Even if the attributes are set, they are of no use per se. 
-#         # Hence a new one needs to be created if you want different values. That's what is happening in the Sentence_Graph.save()
-#         super().__init__(head, "-", tail)
 

@@ -12,8 +12,9 @@ import constants as C
 import spacy
 from loguru import logger as log
 import uuid
-from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge, KBNode
+from p2g_dataclasses import PhraseNode, PhraseEdge, SentenceGraph, SentenceTable, NERNode, NounNode, PhraseInfoEdge, KBNode, AdjNode, VerbNode
 from external_kbs import Explorer
+from wordnet_explorer import WordNet_Explorer
 import sqlite3
 import py2neo as p2n
 import ast
@@ -56,7 +57,8 @@ class TextProcessor:
             Persist the sentence tokens in db
             '''
             s_t = SentenceTable(self.db)
-            nouns, ners = s_t.persist(sentence_uuid, sentence)
+            ners, nouns, adjs, verbs = s_t.persist(sentence_uuid, sentence)
+            deduped_nouns = self.dedup_nouns_from_ners(nouns, ners)
             
             '''
             Break sentences into phrases and get PhraseEdges
@@ -64,74 +66,105 @@ class TextProcessor:
             ph_3plets = self.sentencer(sentence_uuid, sentence)
 
             '''
-            Get edges that are Phrase->Noun and Phrase->NER
+            Get edges that are Phrase->Noun | NER | Adjective | Verb
             '''
-            noun_ner_3plets = self.construct_noun_ner_3plets(nouns, ners, ph_3plets)
+            ner_pos_3plets = self.construct_phrase_3plets(ners, deduped_nouns, adjs, verbs, ph_3plets)
 
             '''
             Get edges that are Noun|NER->KB_Info 
             '''
-            kb_3plets = self.constuct_kb_3plets(nouns, ners)
+            kb_3plets = self.constuct_kb_3plets(ners, deduped_nouns, adjs, verbs)
 
             '''
             Save the outcomes to persistent graph
             '''
             s_g = SentenceGraph(self.G_n4j, sentence_uuid)
-            s_g.save(ph_3plets, noun_ner_3plets, kb_3plets)
+            s_g.save(ph_3plets, ner_pos_3plets, kb_3plets)
 
     def dedup_nouns_from_ners(self, nouns, ners):
         '''
         Removes the nouns that are in the NERs
         '''
-        deduped_nouns = set()
-        for noun in nouns:
-            for ner in ners:
-                if noun not in ner[0]:
-                    deduped_nouns.add(noun)
-        return deduped_nouns
+        if len(ners) == 0:
+            return nouns
 
-    def construct_noun_ner_3plets(self, nouns, ners, ph_3plets):
+        ner_words, ner_types = zip(*ners)
+        set_ner_words = set((" ").join(ner_words).split())
+        return list(set(nouns) - set_ner_words)
+
+    def construct_phrase_3plets(self, ners, deduped_nouns, adjs, verbs, ph_3plets):
         '''
-        This function takes the nouns, ners and the phrase triplets and creates PhraseInfoEdges
+        This function takes the ners, pos (nouns, adjs, verbs) and the phrase triplets and creates PhraseInfoEdges
         '''
         # de-duped phrase node triplets
         phrases = []
-        for triplet in ph_3plets: 
+        for triplet in ph_3plets:
+            # print(f"{triplet.head=}, {triplet.phrase=}, {triplet.tail=}")
             if triplet.head not in phrases:
                 phrases.append(triplet.head)
             if triplet.tail not in phrases:
                 phrases.append(triplet.tail)
 
-        # de-duped nouns
-        deduped_nouns = self.dedup_nouns_from_ners(nouns, ners)
-
-        noun_ner_3plets = []
+        ner_pos_3plets = []
         for phrase in phrases:
-            for noun in deduped_nouns:
-                if noun in phrase.phrase:
-                    noun_ner_3plets.append(PhraseInfoEdge(phrase, NounNode(noun)))
             for ner in ners:
                 if ner[0] in phrase.phrase:
-                    noun_ner_3plets.append(PhraseInfoEdge(phrase, NERNode(ner[0], ner[1])))
-        return noun_ner_3plets
+                    ner_pos_3plets.append(PhraseInfoEdge(phrase, NERNode(ner[0], ner[1])))
+            for noun in deduped_nouns:
+                if noun.lower() in phrase.phrase.lower():
+                    ner_pos_3plets.append(PhraseInfoEdge(phrase, NounNode(noun)))
+            for adj in adjs:
+                if adj.lower() in phrase.phrase.lower():
+                    ner_pos_3plets.append(PhraseInfoEdge(phrase, AdjNode(adj)))
+            for verb in verbs:
+                if verb.lower() in phrase.phrase.lower():
+                    ner_pos_3plets.append(PhraseInfoEdge(phrase, VerbNode(verb)))      
+
+        log.debug(f"{ner_pos_3plets=}")              
+        return ner_pos_3plets
           
-    def constuct_kb_3plets(self, nouns, ners):
+    def constuct_kb_3plets(self, ners, deduped_nouns, adjs, verbs):
         '''
-        Takes the Noun|NER creates Noun|NER -> KB_Info (for all 4 KBs) nodes + edges
+        Takes the NER | Pos creates NER | Pos -> KB_Info (for all 5 KBs) nodes + edges
         '''
         kb_3plets = []
-        deduped_nouns = self.dedup_nouns_from_ners(nouns, ners)
-        for noun in deduped_nouns:
-            kb_info = self.kbs.get_ext_kb_info(noun)
-            kb_3plets = self.add_meta_nodes(NounNode(noun), kb_info, kb_3plets, [C.WIKIDATA_CLASS, C.DBPEDIA, C.WDINSTANCE, C.CONCEPTNET])
 
         for ner in ners:
             kb_info = self.kbs.get_ext_kb_info(ner[0])
             kb_3plets = self.add_meta_nodes(NERNode(ner[0],ner[1]), kb_info, kb_3plets, [C.WIKIDATA_CLASS, C.DBPEDIA, C.WDINSTANCE, C.CONCEPTNET])
-        
+
+        for noun in deduped_nouns:
+            # kb_info = self.kbs.get_ext_kb_info(noun)
+            # kb_3plets = self.add_meta_nodes(NounNode(noun), kb_info, kb_3plets, [C.WIKIDATA_CLASS, C.DBPEDIA, C.WDINSTANCE, C.CONCEPTNET])
+            kb_3plets = self.add_wordnet_nodes(NounNode(noun), kb_3plets, noun)
+
+        for adj in adjs:
+            kb_3plets = self.add_wordnet_nodes(AdjNode(adj), kb_3plets, adj)
+
+        for verb in verbs:
+            kb_3plets = self.add_wordnet_nodes(VerbNode(verb), kb_3plets, verb)            
+
+        log.debug(f"{kb_3plets=}")   
         return kb_3plets
 
-    def add_meta_nodes(self, head, kb_info, kb_3plets, sources, max_nodes=3):
+    def add_wordnet_nodes(self, head, kb_3plets, pos):
+        '''
+        Utility function used by constuct_kb_3plets to create the KB_Info node + edges for WordNet parent classes
+        '''        
+        wn_e = WordNet_Explorer(pos.lower())
+        parents = wn_e.get_parent_classes()
+        if len(parents)>0:
+            kb_3plets.append(PhraseInfoEdge(head,KBNode(parents[0], C.WORDNET)))        
+            i = 0
+            while True:
+                try:
+                    kb_3plets.append(PhraseInfoEdge(KBNode(parents[i], C.WORDNET),KBNode(parents[i+1], C.WORDNET)))
+                    i = i + 1
+                except IndexError:
+                    break
+        return kb_3plets
+
+    def add_meta_nodes(self, head, kb_info, kb_3plets, sources, max_nodes=C.MAX_KB_NODES):
         '''
         Utility function used by constuct_kb_3plets to create the KB_Info node + edges
         It iterates by each type of source

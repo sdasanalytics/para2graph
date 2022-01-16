@@ -10,8 +10,11 @@
 
 from nltk.corpus import wordnet as wn
 import nltk
+import sys
+from loguru import logger as log
 
 def download_wordnet_corpora():
+    # By default these should get downloaded into /Users/surjitdas/nltk_data
     nltk.download("wordnet")
     nltk.download("omw-1.4")
 
@@ -20,15 +23,33 @@ class WordNet_Explorer():
         self.synsets = wn.synsets(text)
 
     def get_parent_classes(self):
+        parents = []
+        if len(self.synsets) == 0:
+            return parents
+        
         synset = self.synsets[0]
-        print(f"Parent classes of {synset.name()}:")
         while True:
             try:
                 synset = synset.hypernyms()[-1]
-                print(synset)
+                parents.append(synset.name().split('.')[0])
             except IndexError:
-                print("----------")
-                break 
+                break
+        if len(parents) == 0:
+            try:
+                lemma1 = synset.lemmas()[0]
+                # print(f"{lemma1=}")
+                related_form1 = lemma1.derivationally_related_forms()[0].name()
+                # print(f"{related_form1=}")
+                related_synset = wn.synsets(related_form1)[0]
+                while True:
+                    try:
+                        related_synset = related_synset.hypernyms()[-1]
+                        parents.append(related_synset.name().split('.')[0])
+                    except IndexError:
+                        break                
+            except:
+                log.debug("Error while getting parent classes")
+        return parents
 
     def print_info(self):
         for synset in self.synsets:
@@ -57,9 +78,10 @@ class WordNet_Explorer():
         print(f"Between {first_synset} & {second_synset} the similarity scores are: {path_similarity=}, {lch_similarity=}")
 
         
-def test(text1, text2="entity"):
+def test(text1="cat", text2="entity"):
     wn_exp = WordNet_Explorer(text1)
-    wn_exp.get_parent_classes()
+    parents = wn_exp.get_parent_classes()
+    print(f"{parents=}")
     wn_exp.print_info()
     wn_exp.similarity_with(text2)
 
@@ -67,5 +89,8 @@ def test(text1, text2="entity"):
 if __name__=="__main__":
     # download_wordnet_corpora() # Will need to execute this for the first time (if corpora not downloaded)
     # test("cat", "dog")
-    test("cat")
+    if len(sys.argv) ==2:
+        test(sys.argv[1])
+    else:
+        test()
     

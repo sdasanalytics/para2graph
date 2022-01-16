@@ -178,7 +178,7 @@ class Explorer:
 
 def test(text):
     exp = Explorer()
-    x = exp.get_ext_kb_info("Southern")
+    x = exp.get_ext_kb_info(text)
     print(x[C.COL_WIKIDATACLASS])
     print(x[C.COL_WDINSTANCE])
     print(x[C.COL_DBPEDIA])
